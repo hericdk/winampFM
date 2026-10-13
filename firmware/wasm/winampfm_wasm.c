@@ -13,6 +13,9 @@
  *   screen  an ST7789 panel model behind lcd.c: 240x240 RGB565 framebuffer
  *   input   emu_input(notes, buttons) / emu_enc(e, steps) from JS events
  *   boot    emu_init (splash) then emu_start, emu_frame() ~60/s (ui loop)
+ *
+ * -DBOARD_SMK37=1 (build-wasm.sh with BOARD=smk37) builds the M-Vave SMK-37 build's UI instead: its input
+ * stand-in below, the pads' colours read back through emu_pads_ptr (SMK37.md).
  */
 #include <stdint.h>
 #define FM1_XIP(off) ((uintptr_t)(emu_flash + ((uint32_t)(off) - EMU_FLASH_BASE)))      /* the flash window the firmware reads songs and samples from: our RAM image */
@@ -33,10 +36,12 @@ static void fm1_irq_off(void) {}
 static void fm1_irq_on(void) {}
 
 /* ------------------------------------------------------------ input HAL --- */
+#if !BOARD_SMK37
 /* as hal/fm1_input.h, without the matrix scan: JS writes the debounced state */
 #define FM1_NCOL 11u
 #define FM1_NKEY 41u              /* ids: 0..13 buttons, 14..40 note keys */
 #define FM1_NENC 7u
+#define FM1_NBTN 14u              /* buttons: ids 0..13 (as hal/fm1_input.h) */
 enum { FM1_BTN_OCT_DOWN = 0, FM1_BTN_OCT_UP = 1 };
 
 static const int8_t FM1_KEYMAP[6][FM1_NCOL] = {
@@ -107,6 +112,78 @@ static void fm1_led_key(uint32_t id, int on)
                     fm1_led[p] &= (uint8_t)~(1u << r);
             }
 }
+
+#else
+/* BOARD_SMK37=1: as hal/smk_input.h, without the scan: the M-Vave SMK-37's 18 buttons (ids as there: 0 KNOB BANK,
+ * 1 FADER BANK, 2 <, 3 >, 4 OCTAVE-, 5 OCTAVE+ ...), 8 knobs, 16 pads (JS writes notes and buttons; the pads' colours
+ * are read back through emu_pads_ptr) */
+#define FM1_NCOL 16u
+#define FM1_NBTN 18u
+#define FM1_NKEY 37u
+#define FM1_NENC 8u
+#define SMK_NPAD 16u
+#define SMK_NLED 19u
+#define SMK_KEY_F3 5u
+enum { FM1_BTN_OCT_DOWN = 4, FM1_BTN_OCT_UP = 5 };
+enum { SMK_BTN_KNOB_BANK = 0, SMK_BTN_FADER_BANK = 1, SMK_BTN_LEFT = 2, SMK_BTN_RIGHT = 3 };
+#define FM1_OCT_BOTH (1u << FM1_BTN_OCT_DOWN | 1u << FM1_BTN_OCT_UP)
+static const int8_t SMK_PIANO_NOTE[SMK_NPAD] = {7, 9, 11, 12, 14, 16, 18, 19, 8, 10, -1, 13, 15, 17, -1, 20};
+static volatile uint8_t smk_pad_piano, smk_pad_grid;
+static volatile uint16_t smk_pad_pick, smk_pick_hits;
+#define SMK_WHITE_OF_PAD(p) ((p) < 8u ? (p) + 8u : (p) - 8u)
+#define SMK_PAD_OF_WHITE(w) ((w) < 8u ? (w) + 8u : (w) - 8u)
+#define SMK_PAD_OF_KEY(w) (smk_pad_grid ? (w) : SMK_PAD_OF_WHITE(w))
+
+static volatile struct {
+    uint32_t notes, buttons, pressed, released, notes_pressed;
+    uint8_t key_vel[FM1_NKEY];
+    int16_t enc_steps[FM1_NENC];
+    uint8_t fader[4];
+    uint16_t wheel[2];
+    uint32_t frames;
+} fm1_in;
+
+static uint8_t fm1_led[SMK_NLED];
+static uint8_t fm1_led_dim[SMK_NLED];
+static uint8_t fm1_led_lv[64];
+char _etext[1]; uint32_t _data_start[1], _data_end[1], _bss_start[1], _bss_end[1], _pool_start[1], _pool_end[1], _rt_start[1], _rt_end[1];   /* (the linker's: the ABOUT page reads them) */
+
+static void fm1_input_init(void) {}
+static int32_t fm1_enc_take(uint32_t e)
+{
+    int32_t s = fm1_in.enc_steps[e];
+    fm1_in.enc_steps[e] = 0;
+    return s;
+}
+static uint32_t fm1_input_edges(uint32_t *released)
+{
+    uint32_t p = fm1_in.pressed;
+    if (released)
+        *released = fm1_in.released;
+    fm1_in.pressed = fm1_in.released = 0;
+    return p;
+}
+static uint32_t fm1_input_note_edges(void)
+{
+    uint32_t p = fm1_in.notes_pressed;
+    fm1_in.notes_pressed = 0;
+    return p;
+}
+static uint32_t smk_pick_take(void)
+{
+    uint32_t h = smk_pick_hits;
+    smk_pick_hits = 0;
+    return h;
+}
+static int32_t smk_extkey_take(void) { return -1; }
+static void fm1_led_key(uint32_t id, int on)
+{
+    if (id < SMK_NLED)
+        fm1_led[id] = (uint8_t)(on != 0);
+}
+static void fm1_padled_send(const void *p, uint32_t n) { (void)p; (void)n; }   /* (the colours: padled_rgb) */
+static void fm1_padled_done(void) {}
+#endif
 
 /* -------------------------------------------------------------- adc HAL --- */
 enum { FM1_ADC_BATT = 3, FM1_ADC_MASTER = 4 };
@@ -228,11 +305,20 @@ static volatile uint32_t emu_flash_gen;
 #include "ui_song.c"
 #include "ui_studio.c"
 #include "icons.c"
+#if BOARD_SMK37
+#include "ui_pick.c"
+#endif
 #include "ui_draw.c"
 #include "ui_layers.c"
 #include "ui_menu.c"
 #include "ui_winamp.c"       /* winampFM: the player screen */
+#if BOARD_SMK37
+#include "ui_padgrid.c"
+#endif
 #include "ui_input.c"
+#if BOARD_SMK37
+#include "ui_fbank.c"
+#endif
 /* ---- flash: a RAM image of the FM-1's persisted areas ----
  * storage.c's A/B sector scheme runs unchanged on this array; JS loads a
  * saved image into it before boot and writes it back to IndexedDB whenever
@@ -242,6 +328,7 @@ static volatile uint32_t emu_flash_gen;
 static uint8_t flash_ok;
 #define FL_FAR(f) f
 static uint32_t fl_jedec_ram(void) { return 0x856014u; }   /* the expected part: flash_ok */
+#define FL_JEDEC_OK(id) ((id) == 0x856014u)                    /* (as hal/fm1_flash_map.h on the FM-1) */
 static void fl_plain_window_init(void) {}
 static int emu_fl_ok(uint32_t off, uint32_t n)
 {
@@ -374,7 +461,7 @@ WASM_EXPORT("emu_input") void emu_input(uint32_t notes, uint32_t buttons)
 {
     uint32_t pn = fm1_in.notes, pb = fm1_in.buttons;
     fm1_in.notes = notes & 0x7FFFFFFu;
-    fm1_in.buttons = buttons & 0x3FFFu;
+    fm1_in.buttons = buttons & ((1u << FM1_NBTN) - 1u);
     fm1_in.notes_pressed |= notes & ~pn;
     fm1_in.pressed |= buttons & ~pb;
     fm1_in.released |= pb & ~buttons;
@@ -402,6 +489,35 @@ WASM_EXPORT("emu_audio_ptr") uint32_t emu_audio_ptr(void) { return (uint32_t)(ui
 WASM_EXPORT("emu_led_ptr") uint32_t emu_led_ptr(void) { return (uint32_t)(uintptr_t)fm1_led; }
 WASM_EXPORT("emu_led_lv_ptr") uint32_t emu_led_lv_ptr(void) { return (uint32_t)(uintptr_t)fm1_led_lv; }
 WASM_EXPORT("emu_led_dim_ptr") uint32_t emu_led_dim_ptr(void) { return (uint32_t)(uintptr_t)fm1_led_dim; }
+#if BOARD_SMK37
+WASM_EXPORT("emu_pads_ptr") uint32_t emu_pads_ptr(void) { return (uint32_t)(uintptr_t)padled_rgb; }   /* 16 x 0xGGRRBB, hardware pad order */
+/* a pad (hardware 0..15: 0..7 the top row) hit with velocity vel, or let go (0), as hal/smk_input.h smk__padq does it */
+WASM_EXPORT("emu_pad") void emu_pad(uint32_t pad, uint32_t vel)
+{
+    static const uint8_t WHITE[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};
+    static uint8_t held[16];
+    int32_t n;
+    if (pad >= 16u)
+        return;
+    if (!vel) {
+        if (held[pad])
+            fm1_in.notes &= ~(1u << (held[pad] - 1u));
+        held[pad] = 0;
+        return;
+    }
+    if ((smk_pad_pick >> pad) & 1u) {
+        smk_pick_hits |= (uint16_t)(1u << pad);
+        return;
+    }
+    n = smk_pad_piano ? SMK_PIANO_NOTE[pad] : (int32_t)WHITE[smk_pad_grid ? pad : SMK_WHITE_OF_PAD(pad)];
+    if (n < 0)
+        return;
+    held[pad] = (uint8_t)(n + 1);
+    fm1_in.key_vel[SMK_KEY_F3 + (uint32_t)n] = (uint8_t)(vel > 127u ? 127u : vel);
+    fm1_in.notes |= 1u << n;
+    fm1_in.notes_pressed |= 1u << n;
+}
+#endif
 WASM_EXPORT("emu_flash_ptr") uint32_t emu_flash_ptr(void) { return (uint32_t)(uintptr_t)emu_flash; }
 WASM_EXPORT("emu_flash_size") uint32_t emu_flash_size(void) { return EMU_FLASH_SIZE; }
 WASM_EXPORT("emu_flash_gen") uint32_t emu_flash_gen_get(void) { return emu_flash_gen; }
