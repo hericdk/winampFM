@@ -39,7 +39,7 @@ The code is GPL-3.0-only, so any firmware you distribute that is based on it mus
 
 | Folder | Content |
 |---|---|
-| `site/` | The site: installer, 3D simulator (`site/sim/`) and the feature clips. |
+| `index.html`, `assets/`, `media/`, `sim/` | The site: installer, 3D simulator (`sim/`) and the feature clips. |
 | `release/` | The firmware package `winampfm-0.1.fwsc`. |
 | `firmware/` | The complete source of that firmware (C, JieLi AC79), as the GPL requires. `sh firmware/build.sh` builds the package (see `firmware/BUILDING.md`). |
 

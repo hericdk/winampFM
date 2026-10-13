@@ -1,6 +1,792 @@
 <!doctype html>
+<!-- winampFM launch page + installer (the panel at the top; firmware/tools/instalador.py injects the script and the package). media/: clips cut from the video scenes. -->
+<html lang="en" data-l="en">
+<head>
 <meta charset="utf-8">
-<title>winampFM Synth</title>
-<meta http-equiv="refresh" content="0; url=site/">
-<link rel="canonical" href="site/">
-<a href="site/">winampFM Synth</a>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-8CREY6XFYZ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  (function () {
+    var ck = null; try { ck = localStorage.getItem("wfm.cookies"); } catch (e) {}
+    gtag("consent", "default", { analytics_storage: ck === "yes" ? "granted" : "denied", ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied" });
+    gtag("js", new Date());
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) gtag("config", "G-8CREY6XFYZ");     /* local tests never count as visits */
+  })();
+</script>
+<title>winampFM Synth · firmware for the M-VAVE FM-1</title>
+<meta name="description" content="winampFM Synth: a Winamp-style firmware for the M-VAVE FM-1. The sound list, four recordable tracks, effects on sliders, PARTY, TAPES and a line visualizer.">
+<style>
+  @font-face { font-family: "Pixelify Sans"; src: url(assets/PixelifySans-400.ttf) format("truetype"); font-display: swap; }
+  :root { --bg: #0e0f1a; --bg2: #151627; --line: #262840; --txt: #d6d6e2; --dim: #8b8ba2; --gold: #e8d898; --org: #f07818; --org2: #ffb050; --grn: #1ce61c;
+          --k1: #5a8ad0; --k2: #7ab04e; --k3: #f0c860; --k4: #e08a3a; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--txt); font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  html[data-l="en"] [lang="pt"], html[data-l="pt"] [lang="en"] { display: none; }
+  a { color: var(--gold); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+  .px { font-family: "Pixelify Sans", ui-monospace, monospace; letter-spacing: .02em; }
+
+  /* top */
+  header.top { display: flex; justify-content: space-between; align-items: center; padding: 18px 0; }
+  header.top .name { font: 600 22px "Pixelify Sans", monospace; color: var(--gold); text-decoration: none; display: flex; gap: 10px; align-items: center; }
+  header.top .name i { width: 14px; height: 20px; background: var(--org); clip-path: polygon(45% 0, 100% 0, 62% 38%, 92% 38%, 20% 100%, 40% 52%, 8% 52%); }
+  .lang { display: flex; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .lang button { font: 13px "Pixelify Sans", monospace; background: none; color: var(--dim); border: 0; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+  .lang button[aria-pressed="true"] { background: var(--line); color: #fff; }
+
+  /* hero */
+  .hero { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 24px; align-items: center; max-width: 860px; margin: 0 auto; padding: 8px 0 22px; }
+  .hero img { width: 170px; image-rendering: pixelated; border-radius: 6px; }
+  .hero h1 { font: 400 clamp(26px, 4vw, 36px)/1.15 "Pixelify Sans", monospace; color: #fff; margin: 0 0 8px; }
+  .hero p { color: #b8b8c8; margin: 0; }
+  @media (max-width: 560px) { .hero { grid-template-columns: 96px minmax(0, 1fr); gap: 14px; } .hero img { width: 96px; } .hero p { font-size: 15px; } }
+  .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { font: 16px "Pixelify Sans", monospace; text-decoration: none; padding: 12px 22px; border-radius: 8px; border: 1px solid var(--line); color: var(--txt); background: var(--bg2); }
+  .btn.main { background: var(--org); border-color: var(--org); color: #1a0d02; }
+  .btn:hover { border-color: var(--org2); }
+
+  .film { margin: 10px auto 0; max-width: 860px; }
+  .film video { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--line); background: #000; }
+  .note { color: var(--dim); font-size: 14px; text-align: center; margin: 10px 0 0; }
+
+  /* features: the clip left, what it does and how to get there right */
+  section.feats { padding: 56px 0 10px; }
+  h2 { font: 400 28px "Pixelify Sans", monospace; color: var(--gold); margin: 0 0 6px; }
+  .sub { color: var(--dim); margin: 0 0 28px; }
+  .feat { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 30px; align-items: center; padding: 26px 0; border-top: 1px solid var(--line); }
+  .feat video { width: 260px; height: 260px; display: block; image-rendering: pixelated; border-radius: 8px; border: 1px solid var(--line); background: #000; }
+  .feat h3 { font: 400 24px "Pixelify Sans", monospace; color: #fff; margin: 0 0 6px; display: flex; gap: 10px; align-items: baseline; }
+  .feat h3 small { font-size: 13px; color: var(--org2); }
+  .feat p { margin: 0 0 14px; color: #c4c4d4; }
+  .keys { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 15px; }
+  kbd { font: 13px "Pixelify Sans", monospace; color: #fff; background: #1e1f33; border: 1px solid var(--c, #44465e); border-bottom-width: 2px; border-radius: 5px; padding: 2px 8px; white-space: nowrap; justify-self: start; align-self: start; }
+  .keys span { color: #b4b6ca; }
+  @media (max-width: 680px) {
+    .feat { grid-template-columns: 1fr; gap: 14px; }
+    .feat video { width: 100%; height: auto; aspect-ratio: 1; max-width: 360px; }
+  }
+
+  /* install */
+  section.install { padding: 50px 0; }
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 0 0 22px; display: grid; gap: 10px; }
+  .steps li { counter-increment: s; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px 12px 52px; position: relative; }
+  .steps li::before { content: counter(s); position: absolute; left: 16px; top: 11px; font: 18px "Pixelify Sans", monospace; color: var(--org2); }
+  footer { border-top: 1px solid var(--line); padding: 26px 0 50px; color: var(--dim); font-size: 13px; }
+  footer p { margin: 0 0 8px; }
+  /* the installer, always at the top */
+  .inst { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin: 0 auto 34px; max-width: 860px; }
+  .ihead { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  #go { font: 18px "Pixelify Sans", monospace; padding: 14px 26px; border-radius: 8px; border: 1px solid var(--org); background: var(--org); color: #1a0d02; cursor: pointer; }
+  #go:disabled { opacity: .55; cursor: default; }
+  .imeta { flex: 1; min-width: 220px; } .imeta p { margin: 0; }
+  .ver { font: 13px/1.35 "Pixelify Sans", monospace; color: var(--dim); } .ver b { color: var(--org2); font-weight: 400; }
+  .prog { display: flex; gap: 12px; align-items: center; margin: 16px 0 6px; }
+  #bar { flex: 1; height: 14px; appearance: none; -webkit-appearance: none; border: 1px solid var(--line); border-radius: 7px; background: #0b0c16; overflow: hidden; }
+  #bar::-webkit-progress-bar { background: #0b0c16; } #bar::-webkit-progress-value { background: linear-gradient(90deg, var(--org), var(--org2)); }
+  #bar::-moz-progress-bar { background: linear-gradient(90deg, var(--org), var(--org2)); }
+  #pct { font: 15px "Pixelify Sans", monospace; color: var(--org2); min-width: 44px; text-align: right; }
+  #status { margin: 0; min-height: 1.6em; color: #fff; font: 16px "Pixelify Sans", monospace; }
+  .small { font-size: 14px; color: var(--dim); } .iline { margin: 10px 0 0; }
+  details { margin: 12px 0; } summary { cursor: pointer; color: var(--gold); }
+  pre#log { background: #0b0c16; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; }
+  /* the 3D simulator */
+  section.simsec { padding: 46px 0 0; }
+  .simwrap { background: transparent; }
+  #simframe { display: block; width: 100%; height: 520px; border: 0; background: transparent; }
+  /* the cookie notice (Google Analytics only, as on the FM1 Quest page) */
+  #ckbar { position: fixed; left: 16px; bottom: 16px; z-index: 120; max-width: min(460px, calc(100vw - 32px)); background: var(--bg2); border: 1px solid var(--org); box-shadow: 0 8px 28px #0008; padding: 14px 16px; font-size: 14px; line-height: 1.45; border-radius: 8px; }
+  #ckbar[hidden] { display: none; }
+  #ckbar p { margin: 0 0 10px; }
+  #ckbar .ckb { display: flex; gap: 8px; flex-wrap: wrap; }
+  #ckbar button { font: 600 14px/1 "Pixelify Sans", monospace; background: var(--bg); color: var(--txt); border: 1px solid var(--org); padding: 9px 14px; cursor: pointer; border-radius: 6px; }
+  #ckbar button#ck-yes { background: var(--org); color: #1a0d02; }
+</style>
+<link rel="stylesheet" href="assets/fmrec.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="name" href="#"><i></i>winampFM</a>
+    <div class="lang" role="group" aria-label="Language"><button data-set="en" aria-pressed="true">EN</button><button data-set="pt" aria-pressed="false">PT</button></div>
+  </header>
+
+  <section class="hero">
+    <img src="assets/logo.png" alt="winampFM">
+    <div><h1><span lang="en">winampFM Synth for your FM-1</span><span lang="pt">winampFM Synth para o seu FM-1</span></h1>
+    <p><span lang="en">A free firmware for the M-VAVE FM-1. Your sounds as a playlist, four tracks you record as loops, effects on sliders, and a visualizer made of lines.</span>
+       <span lang="pt">Um firmware gratuito para o M-VAVE FM-1. Seus sons como uma playlist, quatro faixas que você grava em loop, efeitos em sliders e um visualizador feito de linhas.</span></p></div>
+  </section>
+
+  <section class="inst" id="install">
+    <div class="ihead">
+      <button id="go" disabled data-t="install"></button>
+      <span class="ver"><b>winampFM v0.1</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
+      <div class="imeta"><p class="small" data-t="intro"></p><p class="small" data-t="warn"></p></div>
+    </div>
+    <div class="prog"><progress id="bar" max="100" value="0"></progress><span id="pct">0%</span></div>
+    <p id="status" aria-live="polite"></p>
+  </section>
+
+  <div class="film">
+    <video src="media/winampFM-remix.mp4" poster="media/remix.jpg" controls preload="none" playsinline></video>
+    <p class="note"><span lang="en">A 90s remix made live, one track at a time. Every sound was played on the winampFM firmware.</span><span lang="pt">Um remix anos 90 feito ao vivo, uma faixa por vez. Todo som foi tocado no firmware winampFM.</span></p>
+  </div>
+
+  <section class="simsec" id="simulator">
+    <h2><span lang="en">Play it here</span><span lang="pt">Toque aqui</span></h2>
+    <p class="sub"><span lang="en">The real firmware in your browser. Click the screen to switch it on, then use the buttons, the knobs or your computer keyboard. The DEMOS play by themselves.</span>
+       <span lang="pt">O firmware de verdade no navegador. Clique na tela para ligar e use os botões, os knobs ou o teclado do computador. As DEMOS tocam sozinhas.</span></p>
+    <div class="simwrap"><iframe id="simframe" title="winampFM simulator" allow="autoplay; midi" loading="lazy"></iframe></div>
+  </section>
+
+  <section class="feats" id="features">
+    <h2><span lang="en">What it does</span><span lang="pt">O que ele faz</span></h2>
+    <p class="sub"><span lang="en">Each clip is the real screen. Next to it: what it is, and the buttons that take you there.</span><span lang="pt">Cada clipe é a tela de verdade. Ao lado: o que é e os botões que levam até lá.</span></p>
+
+    <div class="feat">
+      <video src="media/playlist.mp4" poster="media/playlist.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">The sound list</span><span lang="pt">A lista de sons</span></h3>
+        <p><span lang="en">Every sound is a song in a Winamp playlist. Scroll it and the sound loads on the track you're on, with its name in the marquee.</span>
+           <span lang="pt">Cada som é uma música numa playlist do Winamp. Role a lista e o som entra na faixa em que você está, com o nome no letreiro.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">PRESETS</kbd><span lang="en">scroll the list, load the sound</span><span lang="pt">rola a lista e carrega o som</span>
+          <kbd style="--c:var(--k2)">ALGORITHM</kbd><span lang="en">pick the track: 1 → 2 → 3 → DRUMS</span><span lang="pt">escolhe a faixa: 1 → 2 → 3 → DRUMS</span>
+          <kbd style="--c:var(--k3)">HOME</kbd><span lang="en">next window: FX · PL · VIS · TAPES</span><span lang="pt">próxima janela: FX · PL · VIS · TAPES</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/record.mp4" poster="media/record.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">Record loops</span><span lang="pt">Grave loops</span></h3>
+        <p><span lang="en">Arm REC and play. A reel-to-reel shows the real take: input meter, counter, notes, passes. The bolt turns into a red LED, and the marquee says it really whips the llama's ass. Press REC again and the loop closes, with the tempo taken from what you played.</span>
+           <span lang="pt">Arme o REC e toque. Um gravador de rolo mostra a gravação de verdade: nível de entrada, contador, notas e passadas. O raio vira um LED vermelho, e o letreiro diz que it really whips the llama's ass. REC de novo fecha o loop, com o tempo tirado do que você tocou.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">REC</kbd><span lang="en">arm · close the loop</span><span lang="pt">arma · fecha o loop</span>
+          <kbd style="--c:var(--k2)">REC hold</kbd><span lang="en">clear the track</span><span lang="pt">apaga a faixa</span>
+          <kbd style="--c:var(--k3)">FX + REC</kbd><span lang="en">reset the track's effects</span><span lang="pt">zera os efeitos da faixa</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/effects.mp4" poster="media/effects.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">Effects on sliders</span><span lang="pt">Efeitos em sliders</span></h3>
+        <p><span lang="en">SEND · SPACE · MASTER, Winamp-style sliders moved by the four knobs. The line above them moves with the sound, and turning up the delay makes it echo.</span>
+           <span lang="pt">SEND · SPACE · MASTER, sliders do Winamp movidos pelos quatro knobs. A linha acima deles se mexe com o som, e aumentar o delay faz ela ecoar.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">SELECT</kbd><span lang="en">next group: SEND · SPACE · MASTER · PARTY · TRACK</span><span lang="pt">próximo grupo: SEND · SPACE · MASTER · PARTY · TRACK</span>
+          <kbd style="--c:var(--k2)">KNOB 1–4</kbd><span lang="en">the four sliders</span><span lang="pt">os quatro sliders</span>
+          <kbd style="--c:var(--k3)">TRACK</kbd><span lang="en">the selected track: LEVEL, STEPS (loop length), PAN, SWING</span><span lang="pt">a faixa selecionada: LEVEL, STEPS (tamanho do loop), PAN, SWING</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/party.mp4" poster="media/party.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3>PARTY <small>NEW</small></h3>
+        <p><span lang="en">Who's on stage: SOLO, DUEL, TRIAD or everyone. Turn on AUTOTURN and the stage changes in time with the song. KEEP holds the lead while the others take turns; YOYO walks the stage across the tracks and back.</span>
+           <span lang="pt">Quem está no palco: SOLO, DUEL, TRIAD ou todo mundo. Com o AUTOTURN, o palco troca no tempo da música. KEEP segura o lead enquanto os outros se revezam; YOYO anda pelas faixas e volta.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">SELECT</kbd><span lang="en">PARTY comes after MASTER</span><span lang="pt">PARTY vem depois de MASTER</span>
+          <kbd style="--c:var(--k1)">KNOB 1</kbd><span lang="en">SOLO · DUEL · TRIAD · PARTY</span><span lang="pt">SOLO · DUEL · TRIAD · PARTY</span>
+          <kbd style="--c:var(--k2)">KNOB 2</kbd><span lang="en">the lead (it steps in without breaking the beat)</span><span lang="pt">o lead (entra sem quebrar o ritmo)</span>
+          <kbd style="--c:var(--k3)">KNOB 3</kbd><span lang="en">AUTOTURN: off, every 1 · 2 · 4 · 8 bars</span><span lang="pt">AUTOTURN: desligado, a cada 1 · 2 · 4 · 8 compassos</span>
+          <kbd style="--c:var(--k4)">KNOB 4</kbd><span lang="en">KEEP or YOYO</span><span lang="pt">KEEP ou YOYO</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/tapes.mp4" poster="media/tapes.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3>TAPES <small>NEW</small></h3>
+        <p><span lang="en">Every sound is a cassette in a PS1-style carousel. Stop on a tape to hear it, then copy it: the sound and its phrase go into your track.</span>
+           <span lang="pt">Cada som é uma fita num carrossel estilo PS1. Pare numa fita para ouvir e copie: o som e a frase dela vão para a sua faixa.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">PLAY hold</kbd><span lang="en">open TAPES (or HOME)</span><span lang="pt">abre TAPES (ou HOME)</span>
+          <kbd style="--c:var(--k2)">PRESETS</kbd><span lang="en">spin the tapes</span><span lang="pt">gira as fitas</span>
+          <kbd style="--c:var(--k3)">SEL</kbd><span lang="en">copy into the track</span><span lang="pt">copia para a faixa</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/visual.mp4" poster="media/visual.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">Visualizer</span><span lang="pt">Visualizador</span></h3>
+        <p><span lang="en">Pixel art made only of lines, driven by the sound: SCOPE, BARS, MILK, RAYS, TUNNEL.</span>
+           <span lang="pt">Pixel art feita só de linhas e movida pelo som: SCOPE, BARS, MILK, RAYS, TUNNEL.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">HOME</kbd><span lang="en">to the VIS window</span><span lang="pt">vai para a janela VIS</span>
+          <kbd style="--c:var(--k2)">SELECT</kbd><span lang="en">next picture</span><span lang="pt">próxima imagem</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/pages.mp4" poster="media/pages.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">Everything else, still there</span><span lang="pt">Todo o resto continua lá</span></h3>
+        <p><span lang="en">All the SLOOP pages stay where they were: steps, mix, performance effects, the song chain. In the menu you'll also find screen brightness.</span>
+           <span lang="pt">Todas as páginas do SLOOP continuam onde estavam: passos, mix, efeitos de performance, a corrente de músicas. No menu também tem o brilho da tela.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">SEQ · GLO · FX hold</kbd><span lang="en">steps · mute / solo · performance FX</span><span lang="pt">passos · mute / solo · efeitos de performance</span>
+          <kbd style="--c:var(--k2)">SAVE hold</kbd><span lang="en">the song</span><span lang="pt">a música</span>
+          <kbd style="--c:var(--k3)">HOME hold</kbd><span lang="en">menu: brightness, USB audio, boot sound</span><span lang="pt">menu: brilho, áudio USB, som de abertura</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="install">
+    <h2><span lang="en">Installing: details</span><span lang="pt">Instalação: detalhes</span></h2>
+    <p class="small" data-t="beta"></p>
+    <p class="small" data-t="direct"></p>
+    <p class="small"><span data-t="brick"></span> <a href="https://github.com/kurogedelic/FM-1-transporter" target="_blank" rel="noopener">FM-1-transporter</a>.
+      <span lang="en">Hold OCT− alone while switching the FM-1 on for the USB rescue.</span><span lang="pt">Segure só o OCT− ao ligar o FM-1 para o resgate por USB.</span></p>
+    <details>
+      <summary data-t="stockTitle"></summary>
+      <p class="small" data-t="stockHelp"></p>
+      <p class="small"><a href="https://www.m-vave.com/download" target="_blank" rel="noopener">www.m-vave.com/download</a></p>
+      <p class="small" data-t="stockBackup"></p>
+      <p class="small"><label><input id="stock-saved" type="checkbox"> <span data-t="stockSaved"></span></label></p>
+      <p class="small"><label><span data-t="stockFile"></span><br><input id="stock-file" type="file" accept=".fwsc"></label></p>
+      <p><button id="stock-go" class="btn" disabled data-t="stockGo"></button></p>
+      <p class="small" data-t="back"></p>
+    </details>
+    <details>
+      <summary><span lang="en">Install log</span><span lang="pt">Registro da instalação</span></summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+
+  <footer>
+    <p><span lang="en">winampFM is based on FM1 Quest and SLOOP by isod89, which is based on Felucca by Leo Kuroshita (Hügelton Instruments). GPL-3.0.</span>
+       <span lang="pt">O winampFM é baseado no FM1 Quest e no SLOOP de isod89, que é baseado no Felucca de Leo Kuroshita (Hügelton Instruments). GPL-3.0.</span></p>
+    <p><span lang="en">Not affiliated with Winamp or M-VAVE. M-VAVE and FM-1 are trademarks of their respective owners.</span>
+       <span lang="pt">Sem ligação com o Winamp ou a M-VAVE. M-VAVE e FM-1 são marcas de seus donos.</span></p>
+    <p><a href="#cookies" id="ck-open"><span lang="en">Cookies and statistics (Google Analytics)</span><span lang="pt">Cookies e estatísticas (Google Analytics)</span></a></p>
+  </footer>
+  <div id="ckbar" role="dialog" aria-label="Cookies" hidden>
+    <p><span lang="en">This site uses cookies only for Google Analytics (counting visits and clicks). Nothing is used for ads.</span><span lang="pt">Este site usa cookies apenas para o Google Analytics (contar visitas e cliques). Nada é usado para anúncios.</span></p>
+    <div class="ckb"><button type="button" id="ck-yes"><span lang="en">Accept</span><span lang="pt">Aceitar</span></button><button type="button" id="ck-no"><span lang="en">Decline</span><span lang="pt">Recusar</span></button></div>
+  </div>
+</div>
+<script>
+  (function () {
+    const set = (l) => { document.documentElement.dataset.l = l; document.documentElement.lang = l === 'pt' ? 'pt-BR' : 'en';
+      document.querySelectorAll('.lang button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.set === l)));
+      try { localStorage.setItem('wfm-lang', l); } catch (e) {} dispatchEvent(new Event('wfm-lang')); };
+    let l = 'en';
+    try { l = localStorage.getItem('wfm-lang') || ((navigator.language || '').toLowerCase().startsWith('pt') ? 'pt' : 'en'); } catch (e) {}
+    set(l);
+    document.querySelectorAll('.lang button').forEach((b) => b.addEventListener('click', () => set(b.dataset.set)));
+    // the clips play only while on screen
+    const io = new IntersectionObserver((es) => es.forEach((e) => { const v = e.target; if (e.isIntersecting) { if (v.preload === 'none') v.preload = 'auto'; v.play().catch(() => {}); } else v.pause(); }), { rootMargin: '200px' });
+    document.querySelectorAll('.feat video').forEach((v) => io.observe(v));
+    const sf = document.getElementById('simframe');
+    const simIO = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && !sf.src) { sf.src = 'sim/?embed&lang=' + document.documentElement.dataset.l; simIO.disconnect(); } }, { rootMargin: '400px' });
+    simIO.observe(sf);
+    sf.addEventListener('load', () => {                     // the frame takes the height of what is in it: no empty band under the model
+      const d = sf.contentDocument; if (!d) return;
+      const fit = () => { const h = d.querySelector('main') ? d.querySelector('main').getBoundingClientRect().bottom : d.body.scrollHeight; if (h > 50) sf.style.height = Math.ceil(h) + 'px'; };
+      if (window.ResizeObserver) new ResizeObserver(fit).observe(d.body); fit(); setTimeout(fit, 800);
+    });
+    const bar = document.getElementById('bar'), pct = document.getElementById('pct');
+    setInterval(() => { pct.textContent = Math.round(bar.value) + '%'; }, 200);
+  })();
+</script>
+<script>
+/* analytics: Google Analytics only, cookies only after "accept"; the installer, the simulator and outside links are counted */
+(function () {
+  const $ = (i) => document.getElementById(i), CK = "wfm.cookies";
+  const ga = (name, p) => { try { gtag("event", name, p || {}); } catch (e) {} };
+  const ckSet = (v) => { try { localStorage.setItem(CK, v); } catch (e) {} gtag("consent", "update", { analytics_storage: v === "yes" ? "granted" : "denied" }); };
+  const bar = $("ckbar");
+  $("ck-yes").addEventListener("click", () => { ckSet("yes"); bar.hidden = true; });
+  $("ck-no").addEventListener("click", () => { ckSet("no"); bar.hidden = true; });
+  $("ck-open").addEventListener("click", (e) => { e.preventDefault(); bar.hidden = false; $("ck-yes").focus(); });
+  let seen = null; try { seen = localStorage.getItem(CK); } catch (e) {}
+  if (seen === null) bar.hidden = false;
+  const go = $("go"); if (go) go.addEventListener("click", () => ga("install_click"));
+  const sim = document.getElementById("simulator");
+  if (sim && window.IntersectionObserver) { const o = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { ga("sim_view"); o.disconnect(); } }); o.observe(sim); }
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest("a[href]"); if (!a) return;
+    let u; try { u = new URL(a.href, location.href); } catch (x) { return; }
+    if (/^https?:$/.test(u.protocol) && u.host !== location.host) ga("external_link", { link_domain: u.hostname.replace(/^www\./, ""), link_url: u.href.slice(0, 100) });
+  }, true);
+})();
+</script>
+<script src="assets/js/fmrec.js" defer></script>
+<!--INSTALLER-->
+<script type="module">
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
+//
+// FM-1 .fwsc packages in the browser: the package identity and the image the
+// device reads during an update.
+
+const BLOCKS = 20, BLK = 0x30, KEEP = 0x2F;
+
+// the package identity ("FM-1_904"): one marker byte after each of the first 20 blocks
+function productOf(fwsc) {
+  if (fwsc.length < BLOCKS * BLK) throw new Error("not an FM-1 package (too short)");
+  let s = "";
+  for (let i = 0; i < BLOCKS; i++) {
+    const m = fwsc[i * BLK + KEEP];
+    if (m !== 0x7D) s += String.fromCharCode((m - i - 1) & 0xFF);
+  }
+  return s;
+}
+
+// the image the device addresses during an update: the .fwsc without the 20 marker bytes
+function logicalImage(fwsc) {
+  const out = new Uint8Array(fwsc.length - BLOCKS);
+  for (let i = 0; i < BLOCKS; i++) out.set(fwsc.subarray(i * BLK, i * BLK + KEEP), i * KEEP);
+  out.set(fwsc.subarray(BLOCKS * BLK), BLOCKS * KEEP);
+  return out;
+}
+
+// The official FM-1 V15 (M-VAVE Downloads -> PC Firmware -> FM-1 V15, FM-1.fwsc), for the return to the
+// official firmware: only that exact file is accepted (its SHA-256 pins every byte: the loader, the app, the
+// layout; the name of the file proves nothing). The digest is the one Felucca 1.0 pins.
+const STOCK_V15_SHA256 = "db1642b2b6fa5c2cccb11ffd13878068bb28601678d3644049f99dc40e7edb8a";
+const STOCK_V15_SIZE = 699956;
+const STOCK_V15_PRODUCT = "FM-1_015";
+
+async function sha256hex(bytes) {
+  const d = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function validateStockPackage(bytes) {
+  if (bytes.length !== STOCK_V15_SIZE || await sha256hex(bytes) !== STOCK_V15_SHA256 || productOf(bytes) !== STOCK_V15_PRODUCT)
+    throw new Error("select the unmodified official FM-1 V15 file (FM-1.fwsc)");
+  return { product: STOCK_V15_PRODUCT, image: logicalImage(bytes) };
+}
+
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
+//
+// The FM-1 USB-MIDI update protocol (M-UPGRADE compatible) over WebMIDI.
+// Step 1: the running firmware reads parts of the package and stages the update
+// loader. Step 2: the loader reads the whole image and writes it. In both steps
+// the device sends cmd 0x30 read requests on the logical image and we answer.
+
+const HS_QUERY = [0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7];
+const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
+const MAXDATA = 512;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const IS_OTA = (id) => /^ota-/i.test(id.model);
+// the update loader of SLOOP / Felucca packages ("ota-FM-1_9XX"). A device left in the update mode of another
+// firmware (the stock updater's loader) is never written: its loader may lay the image out differently.
+const OUR_LOADER = (id) => /^ota-FM-1_9\d\d$/i.test(id.text);
+
+// errors carry a code the pages translate: notfound, model, stopped, noloader, lost, noreturn,
+// mismatch (detail: the identity the device reports), badreq, foreign (detail: the loader's identity)
+function fail(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
+
+function pack7(data) {
+  const out = []; let acc = 0, nb = 0;
+  for (const b of data) {
+    acc |= b << nb; nb += 8;
+    while (nb >= 7) { out.push(acc & 0x7F); acc >>>= 7; nb -= 7; }
+  }
+  if (nb) out.push(acc & 0x7F);
+  return out;
+}
+
+function unpack7(s) {
+  const out = []; let acc = 0, nb = 0;
+  for (const b of s) {
+    acc |= (b & 0x7F) << nb; nb += 7;
+    while (nb >= 8) { out.push(acc & 0xFF); acc >>>= 8; nb -= 8; }
+  }
+  return out;
+}
+
+function response(addr, data, fl = 0) {
+  const len = data.length;
+  const body = [0x00, 0x59, 0x30, (len + 8) & 0xFF, ((len + 8) >> 8) & 0xFF, 0, fl,
+    addr & 0xFF, (addr >>> 8) & 0xFF, (addr >>> 16) & 0xFF, (addr >>> 24) & 0xFF,
+    len & 0xFF, (len >> 8) & 0xFF, 0, ...data];
+  let s = 0;
+  for (let i = 6; i < body.length; i++) s += body[i];
+  body.push(~s & 0xFF);
+  return [0xF0, ...pack7(body), 0xF7];
+}
+
+function parseRequest(pkt) {
+  if (pkt[0] !== 0xF0 || pkt[pkt.length - 1] !== 0xF7) return null;
+  const u = unpack7(pkt.slice(1, -1));
+  if (u.length !== 15 || u[0] !== 0 || u[1] !== 0x59 || u[2] !== 0x30) return null;
+  let s = 0;
+  for (let i = 6; i < 14; i++) s += u[i];
+  if ((~s & 0xFF) !== u[14]) return null;
+  return { fl: u[6], addr: (u[7] | (u[8] << 8) | (u[9] << 16) | (u[10] << 24)) >>> 0, len: u[11] | (u[12] << 8) | (u[13] << 16) };
+}
+
+function parseIdentity(pkt) {
+  const d = unpack7(pkt.slice(1, -1));
+  if (d.length !== 34 || d[0] !== 0 || d[1] !== 0x59 || d[2] !== 0x11) return null;
+  const txt = String.fromCharCode(...d.slice(6, 33)).replace(/\0+$/, "");
+  const m = /^([^_]+)_(\d+)$/.exec(txt);
+  return m ? { text: txt, model: m[1], version: parseInt(m[2], 10) } : null;
+}
+
+// one MIDI in/out pair with a SysEx queue
+class Link {
+  constructor(input, output) {
+    this.input = input; this.output = output; this.q = []; this.waiter = null;
+    input.onmidimessage = (ev) => {
+      if (ev.data[0] !== 0xF0) return;
+      this.q.push(Array.from(ev.data));
+      if (this.waiter) { const w = this.waiter; this.waiter = null; w(); }
+    };
+  }
+  get lost() { return this.input.state === "disconnected" || this.output.state === "disconnected"; }
+  // false when the port is gone (unplugged): WebMIDI throws on a disconnected output
+  send(bytes) {
+    try { this.output.send(bytes); return true; } catch (_) { return false; }
+  }
+  drain() { this.q.length = 0; }
+  async read(ms) {
+    if (!this.q.length) {
+      let tm;
+      await Promise.race([new Promise((r) => { this.waiter = r; }), new Promise((r) => { tm = setTimeout(r, ms); })]);
+      clearTimeout(tm);
+      this.waiter = null;
+    }
+    return this.q.shift() || null;
+  }
+  close() { this.input.onmidimessage = null; }
+}
+
+async function handshake(link, tries = 3) {
+  link.drain();
+  for (let t = 0; t < tries; t++) {
+    if (!link.send(HS_QUERY)) return null;
+    const end = Date.now() + 1000;
+    while (Date.now() < end) {
+      const p = await link.read(end - Date.now());
+      if (!p) break;
+      const id = parseIdentity(p);
+      if (id) return id;
+    }
+  }
+  return null;
+}
+
+class Updater {
+  constructor(access, log) {
+    this.access = access;
+    this.log = log || (() => {});
+  }
+
+  // every in/out pair with the same port name that answers the handshake
+  async find(filter) {
+    const outs = [...this.access.outputs.values()];
+    for (const input of this.access.inputs.values()) {
+      if (input.state === "disconnected") continue;
+      if (!/fm-1|felucca|ota|composite|sinco|usb-midi/i.test(input.name || "")) continue;   // never probe other gear
+      const output = outs.find((o) => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
+      if (!output) continue;
+      try { await input.open(); await output.open(); } catch (_) { continue; }
+      const link = new Link(input, output);
+      const id = await handshake(link, 2);
+      if (id && (!filter || filter(id))) return { link, id, name: input.name };
+      link.close();
+    }
+    return null;
+  }
+
+  async waitFor(filter, ms) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const dev = await this.find(filter);
+      if (dev) return dev;
+      await sleep(1000);
+    }
+    return null;
+  }
+
+  // serve read requests until the device asks for one of the finish addresses; stops early
+  // when the port disappears (lost: true) instead of waiting out idleMs
+  async serve(link, image, finishAddr, idleMs, onProgress) {
+    let served = 0, last = Date.now();
+    for (;;) {
+      const pkt = await link.read(1000);
+      if (!pkt) {
+        if (link.lost) return { served, finished: false, lost: true };
+        if (Date.now() - last > idleMs) return { served, finished: false };
+        continue;
+      }
+      const r = parseRequest(pkt);
+      if (!r) continue;
+      last = Date.now();
+      if (r.addr === 0xE0000000 || r.addr === 0xF0000000) {
+        link.send(response(r.addr, [...new TextEncoder().encode("success"), 0]));
+        if (r.addr === finishAddr) return { served, finished: true };
+        continue;
+      }
+      if (r.len > MAXDATA || r.addr + r.len > image.length) throw fail("badreq", `bad request ${r.addr.toString(16)}+${r.len}`);
+      await sleep(10);
+      if (!link.send(response(r.addr, Array.from(image.subarray(r.addr, r.addr + r.len)), r.fl))) {
+        return { served, finished: false, lost: true };
+      }
+      served++;
+      if (onProgress) onProgress(served, r.addr);
+    }
+  }
+
+  // full install: running firmware -> loader -> new firmware
+  async install(image, product, onStep, opts = {}) {
+    const step = onStep || (() => {});
+    const dev = await this.find((id) => !IS_OTA(id));
+    if (!dev) throw fail("notfound", "FM-1 not found (USB cable, and no other app using it?)");
+    const [model] = product.split("_");
+    if (dev.id.model !== model) { dev.link.close(); throw fail("model", `the device is ${dev.id.text}, the package is for ${product}`); }
+    // Melodee (a Felucca fork with its own data layout and release identities FM-1_9 + 3 to 5 digits): flashing over it was not tested.
+    // Say so once, with the safe way (its own "Return to official V15", which saves a backup first); pressing Install again goes ahead.
+    if (/^FM-1_9\d{3,5}$/.test(dev.id.text) && !opts.melodeeAck) { dev.link.close(); throw fail("melodee", "this FM-1 runs Melodee", " (" + dev.id.text + ")"); }
+    step("start", dev.id.text);
+    dev.link.send(UPGRADE);
+    await sleep(2000);
+    const s1 = await this.serve(dev.link, image, 0xE0000000, 8000, (n) => step("verify", n));
+    dev.link.close();
+    if (!s1.finished) throw fail(s1.lost ? "lost" : "stopped", `the device ${s1.lost ? "was disconnected" : "stopped"} after ${s1.served} requests: nothing was written`);
+    step("loader");
+    await sleep(3000);
+    const ota = await this.waitFor(IS_OTA, 30000);
+    if (!ota) throw fail("noloader", "the update loader did not appear. Replug the USB cable and press Install again: the device stays in update mode until it is finished.");
+    const s2 = await this.write(ota, image, step);
+    if (!s2.finished) throw fail(s2.lost ? "lost" : "stopped", `the loader ${s2.lost ? "was disconnected" : "stopped"} after ${s2.served} requests. Replug and press Install again to resume.`);
+    step("reboot");
+    await sleep(3000);
+    const back = await this.waitFor((id) => !IS_OTA(id), 40000);
+    if (!back) throw fail("noreturn", "the device did not come back: power-cycle it");
+    back.link.close();
+    if (back.id.text !== product) throw fail("mismatch", `installed, but the device reports ${back.id.text}`, back.id.text);
+    step("done", back.id.text);
+    return back.id.text;
+  }
+
+  // step 2 with the loader found by find()/waitFor()
+  async write(ota, image, step) {
+    ota.link.send(UPGRADE);
+    await sleep(2000);
+    const s2 = await this.serve(ota.link, image, 0xF0000000, 180000, (n) => step("write", n));
+    ota.link.close();
+    return s2;
+  }
+
+  // resume: the device is already in update mode (loader) -> true when the write finished. Only SLOOP's
+  // own loader is resumed, except for the return to the official firmware (opts.product: the official
+  // package, its identity checked once the FM-1 is back, after Felucca 1.0): that one is the official
+  // loader's own image, as M-UPGRADE would write it
+  async resume(image, onStep, opts = {}) {
+    const ota = await this.find(IS_OTA);
+    if (!ota) return false;
+    if (!OUR_LOADER(ota.id) && !opts.product) {
+      ota.link.close();
+      throw fail("foreign", `the FM-1 is in the update mode of another firmware (${ota.id.text}): finish that update with its own updater`, ota.id.text);
+    }
+    const step = onStep || (() => {});
+    if (!(await this.write(ota, image, step)).finished) return false;
+    if (opts.product) {
+      step("reboot");
+      await sleep(3000);
+      const back = await this.waitFor((id) => !IS_OTA(id), 40000);
+      if (!back) throw fail("noreturn", "the FM-1 did not come back after the write: power-cycle it");
+      back.link.close();
+      if (back.id.text !== opts.product) throw fail("mismatch", `written, but the FM-1 reports ${back.id.text}`, back.id.text);
+      step("done", back.id.text);
+    }
+    return true;
+  }
+}
+
+const $ = (id) => document.getElementById(id);
+const TEXT = {
+  en: {
+    ready: "Ready to install winampFM ",
+    intro: "Connect the FM-1 by USB, then press Install. Chrome or Edge only (Web MIDI).",
+    warn: "Do not unplug the USB cable while writing.",
+    install: "Install winampFM",
+    editor: "Open the editor (back up, edit sounds and sequences from the computer)",
+    direct: "Connect the USB cable directly to the computer. No probe or Transporter is needed.",
+    brick: "If an install fails and the FM-1 no longer starts, recovering it needs a Transporter:",
+    beta: "winampFM is an experimental custom firmware and may be unstable. It has not been tried on every unit. The authors accept no responsibility if your FM-1 is damaged or misbehaves because of it. Use it at your own risk, and save a backup first.",
+    back: "To go back to the official firmware you need M-VAVE's official updater, M-UPGRADE (Downloads → PC Software → M-UPGRADE), and the official firmware (PC Firmware → FM-1 V15).",
+    nomidi: "This browser cannot do it. Open the page in Chrome or Edge.", loadfail: "Could not load: ",
+    start: "Talking to the FM-1…", verify: "Step 1 of 3 · sending winampFM to the FM-1 and checking it", loader: "Step 2 of 3 · the FM-1 restarts in update mode", write: "Step 3 of 3 · writing winampFM. Do not unplug the cable",
+    reboot: "Restarting the FM-1…", done: "Done! winampFM is installed: ", stopped: "Stopped. Replug the USB cable and press Install again.",
+    error: "Error: ",
+    denied: "MIDI (SysEx) access was not allowed. Allow MIDI in the site settings (address bar) and press Install again.",
+    notfound: "FM-1 not found. Check the USB cable (a data cable), close other apps that use MIDI, and press Install again.",
+    model: "The connected device is not an FM-1.",
+    lost: "The USB connection was lost. Replug it and press Install again.",
+    noloader: "The FM-1 in update mode was not found. Replug the USB cable and press Install again (it stays in update mode until it is finished).",
+    noreturn: "The FM-1 did not come back. Power-cycle it.",
+    mismatch: "Written, but the FM-1 reports another version: ",
+    foreign: "The FM-1 is in the update mode of another firmware. Finish that update with its own updater (M-UPGRADE), then press Install again: ",
+    badpkg: "The file to install is damaged. Reload the page.",
+    leave: "Writing. Do not close the page.",
+    license: "GPL-3.0, no warranty. Source:",
+    stockTitle: "Return to the official firmware (V15)",
+    stockHelp: "Download the official FM-1 V15 from M-VAVE and select the FM-1.fwsc inside it, unmodified. The file is checked in this browser; it is not sent anywhere.",
+    stockBackup: "The official firmware cannot open SLOOP / winampFM music, projects or samples. Write down or record what you want to keep first.",
+    stockEditor: "Open the editor to back up", stockSaved: "I saved a backup on this computer",
+    stockFile: "The official FM-1.fwsc", stockGo: "Install the official V15",
+    stockValid: "Official V15 verified", stockBad: "Not the official V15: ",
+    stockConfirm: "Install the official V15 on the FM-1? The official firmware cannot open winampFM music. Did you save a backup?",
+    stockFinish: "The FM-1 is in the update mode of SLOOP / winampFM. Press Install to finish that update first, then return to the official V15.",
+    back: "M-VAVE's own updater, M-UPGRADE (Downloads → PC Software), works too. If it does not find the FM-1, close every other app and browser tab that uses MIDI.",
+  },
+  pt: {
+    ready: "Pronto para instalar o winampFM ",
+    intro: "Ligue o FM-1 no USB e aperte Instalar. Só no Chrome ou no Edge (Web MIDI).", warn: "Não desconecte o cabo USB enquanto ele grava.",
+    install: "Instalar o winampFM", editor: "Abrir o editor (backup, sons e sequências pelo computador)",
+    direct: "Ligue o cabo USB direto no computador. Não precisa de probe nem de Transporter.",
+    brick: "Se uma instalação falhar e o FM-1 não ligar mais, para recuperar é preciso um Transporter:",
+    beta: "O winampFM é um firmware experimental e pode ser instável. Não foi testado em todas as unidades. Os autores não se responsabilizam por danos ou mau funcionamento do seu FM-1. Use por sua conta e faça backup antes.",
+    nomidi: "Este navegador não consegue. Abra a página no Chrome ou no Edge.", loadfail: "Não carregou: ",
+    start: "Conversando com o FM-1…", verify: "Passo 1 de 3 · enviando o winampFM ao FM-1 e conferindo", loader: "Passo 2 de 3 · o FM-1 reinicia em modo de atualização",
+    write: "Passo 3 de 3 · gravando o winampFM. Não desconecte o cabo", reboot: "Reiniciando o FM-1…", done: "Pronto! O winampFM está instalado: ",
+    stopped: "Parou. Reconecte o cabo USB e aperte Instalar de novo.", error: "Erro: ",
+    denied: "O acesso MIDI (SysEx) não foi permitido. Permita MIDI nas configurações do site (barra de endereço) e aperte Instalar de novo.",
+    notfound: "FM-1 não encontrado. Confira o cabo USB (de dados), feche outros apps que usam MIDI e aperte Instalar de novo.",
+    model: "O aparelho conectado não é um FM-1.", lost: "A conexão USB caiu. Reconecte e aperte Instalar de novo.",
+    noloader: "O FM-1 em modo de atualização não foi encontrado. Reconecte o cabo e aperte Instalar de novo (ele fica nesse modo até terminar).",
+    noreturn: "O FM-1 não voltou. Desligue e ligue de novo.", mismatch: "Gravado, mas o FM-1 informa outra versão: ",
+    foreign: "O FM-1 está no modo de atualização de outro firmware. Termine essa atualização com o atualizador dele (M-UPGRADE) e aperte Instalar de novo: ",
+    badpkg: "O arquivo de instalação está danificado. Recarregue a página.", leave: "Gravando. Não feche a página.",
+    license: "GPL-3.0, sem garantia. Código:", stockTitle: "Voltar ao firmware oficial (V15)",
+    stockHelp: "Baixe o FM-1 V15 oficial no site da M-VAVE e escolha o FM-1.fwsc de dentro dele, sem modificar. O arquivo é conferido neste navegador e não é enviado a lugar nenhum.",
+    stockBackup: "O firmware oficial não abre músicas, projetos nem samples do SLOOP / winampFM. Anote ou grave antes o que quiser guardar.",
+    stockEditor: "Abrir o editor para o backup", stockSaved: "Salvei um backup neste computador", stockFile: "O FM-1.fwsc oficial", stockGo: "Instalar o V15 oficial",
+    stockValid: "V15 oficial conferido", stockBad: "Não é o V15 oficial: ", stockConfirm: "Instalar o V15 oficial no FM-1? O firmware oficial não abre músicas do winampFM. Você fez backup?",
+    stockFinish: "O FM-1 está no modo de atualização do SLOOP / winampFM. Aperte Instalar para terminar essa atualização e depois volte ao V15 oficial.",
+    back: "O atualizador da própria M-VAVE, M-UPGRADE (Downloads → PC Software), também funciona. Se ele não achar o FM-1, feche outros apps e abas que usam MIDI.",
+  },
+};
+const t = (k) => (TEXT[document.documentElement.dataset.l] || TEXT.en)[k] ?? TEXT.en[k];
+addEventListener("wfm-lang", () => applyLang());   // (the page switched EN / PT)
+let lastKey = null, lastArg = "";
+function applyLang() {
+  document.querySelectorAll("[data-t]").forEach((e) => { e.textContent = t(e.dataset.t); });
+  if (lastKey) $("status").textContent = t(lastKey) + lastArg;
+}
+applyLang();
+const sayK = (k, arg = "") => { lastKey = k; lastArg = arg; $("status").textContent = t(k) + arg; };
+const say = (txt) => { lastKey = null; $("status").textContent = txt; };
+const log = (t) => { $("log").textContent += t + "\n"; };
+let image = null;
+const meta = {"version": "0.1", "product": "FM-1_900", "pkg": "release/winampfm-0.1.fwsc", "sha256": "f2c77b18ccbe839fcb8e4e2c539e47d0cee94ee3e16d00c5a6484b8bb7824cb4"};
+
+let writing = false, stock = null;
+const lockAll = (on) => {
+  writing = on;
+  $("go").disabled = on || !image;
+  $("stock-go").disabled = on || !stock || !$("stock-saved").checked;
+  $("stock-file").disabled = on;
+};
+window.addEventListener("beforeunload", (e) => { if (writing) { e.preventDefault(); e.returnValue = t("leave"); } });
+
+(async () => {
+  if (!navigator.requestMIDIAccess) { sayK("nomidi"); return; }
+  try {
+    const r = await fetch(meta.pkg);
+    if (!r.ok) throw new Error(`${meta.pkg}: HTTP ${r.status}`);
+    const pkg = new Uint8Array(await r.arrayBuffer());
+    if (productOf(pkg) !== meta.product) { sayK("badpkg"); return; }
+    if (meta.sha256 && self.crypto && crypto.subtle) {   /* a damaged download is never offered (the loader checks its CRC too) */
+      const h = [...new Uint8Array(await crypto.subtle.digest("SHA-256", pkg))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (h !== meta.sha256) { sayK("badpkg"); log(`sha256 ${h}, expected ${meta.sha256}`); return; }
+    }
+    image = logicalImage(pkg);
+    sayK("ready", meta.version);
+    lockAll(writing);
+  } catch (e) { sayK("loadfail", e.message); }
+})();
+
+const total = 74 + 1179;                           /* reads: step 1, step 2 (head + app area, SLOOP 2.0 loader) */
+const step = (k, a) => {
+  log(`${k} ${a ?? ""}`);
+  if (k === "start") sayK("start");
+  if (k === "verify") { sayK("verify"); $("bar").value = Math.min(100, (a / total) * 100); }
+  if (k === "loader") sayK("loader");
+  if (k === "write") { sayK("write"); $("bar").value = Math.min(100, ((74 + a) / total) * 100); }
+  if (k === "reboot") sayK("reboot");
+  if (k === "done") { $("bar").value = 100; sayK("done"); }
+};
+const failed = (e) => {
+  if (e && e.code && TEXT.en[e.code]) sayK(e.code, e.detail || "");
+  else sayK("error", e && e.message);
+  log(String(e && e.stack || e));
+};
+
+$("go").addEventListener("click", async () => {
+  if (writing) return;
+  lockAll(true);
+  let midi;
+  try { midi = await navigator.requestMIDIAccess({ sysex: true }); }
+  catch (e) { sayK("denied"); lockAll(false); return; }
+  try {
+    const up = new Updater(midi, log);
+    const ota = await up.find((id) => /^ota-/i.test(id.model));
+    if (ota) {
+      ota.link.close();
+      sayK((await up.resume(image, step)) ? "done" : "stopped");
+    } else {
+      await up.install(image, meta.product, step);
+    }
+  } catch (e) { failed(e); }
+  lockAll(false);
+});
+
+/* back to the official V15 (after Felucca 1.0): only the exact official file, a backup first (the editor),
+   through the same update path as M-UPGRADE; a device left in the official updater's mode is finished */
+$("stock-saved").addEventListener("change", () => lockAll(writing));
+$("stock-file").addEventListener("change", async () => {
+  const f = $("stock-file").files[0];
+  stock = null;
+  lockAll(writing);
+  if (!f) return;
+  try { stock = await validateStockPackage(new Uint8Array(await f.arrayBuffer())); sayK("stockValid"); }
+  catch (e) { sayK("stockBad", e.message); }
+  lockAll(writing);
+});
+$("stock-go").addEventListener("click", async () => {
+  if (writing || !stock || !$("stock-saved").checked || !confirm(t("stockConfirm"))) return;
+  lockAll(true);
+  let midi;
+  try { midi = await navigator.requestMIDIAccess({ sysex: true }); }
+  catch (e) { sayK("denied"); lockAll(false); return; }
+  try {
+    const up = new Updater(midi, log);
+    const ota = await up.find((id) => /^ota-/i.test(id.model));
+    if (ota) {
+      ota.link.close();
+      if (OUR_LOADER(ota.id)) sayK("stockFinish");    /* SLOOP's loader: finish SLOOP first (Install) */
+      else sayK((await up.resume(stock.image, step, { product: stock.product })) ? "done" : "stopped");
+    } else {
+      await up.install(stock.image, stock.product, step);
+    }
+  } catch (e) { failed(e); }
+  lockAll(false);
+});
+</script>
+<!--/INSTALLER-->
+</body>
+</html>
