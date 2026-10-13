@@ -109,6 +109,10 @@ static int ed_smp_erase(uint32_t k, uint32_t all)  /* header sector, or the whol
 {
     uint32_t i, took;
     int rc = 0;
+#if BOARD_SMK37
+    if (!SMP_USER_HAS(k))
+        return -8;                                 /* SMK: USR3 / USR4 have no flash */
+#endif
     usr_nz[k] = 0;
     for (i = 0; i < 16u; i++)
         usr_zone[k][i].n = 0;                     /* a sounding voice ends instead of reading 0xFF */
@@ -439,6 +443,10 @@ static const uint8_t *ed_bk_obj(uint32_t id, uint32_t *len)   /* 0 = no such obj
         *len = sizeof dsu;
         return (const uint8_t *)&dsu;
     }
+#if BOARD_SMK37
+    if (id >= 32u && id < 32u + SMP_USER_SLOTS && !SMP_USER_HAS(id - 32u))
+        return ED_BK_RAW;                                 /* SMK: a slot without flash, always empty (*len 0) */
+#endif
     if (id == 10u) {                                      /* SLOOP 2.6: the MIDI part (the MIDI LEARN map, GLO > MIDI's
                                                          * channels): listed only while it is not the default (a backup
                                                          * without it stays one an older editor reads; its restore leaves
@@ -778,7 +786,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         len = ed_unpack7(a + 4, na - 4u, ed_smp_buf, 256u);
         if (off < SMP_USER_DATA || (off & 0xFFu) || !len || off + len > SMP_USER_SIZE)
             rc = 1;
-        else if (usr_nz[a[0]] || !ed_smp_open[a[0]])
+        else if (usr_nz[a[0]] || !ed_smp_open[a[0]] || !SMP_USER_HAS(a[0]))
             rc = 4;                                        /* slot in use: SMP_BEGIN first (voices read it) */
         else {
             if (!(off & 0xFFFu))                           /* first write into a sector: erase it */

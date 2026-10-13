@@ -1416,6 +1416,21 @@ static uint32_t key_lvl(void)
     uint32_t b = fm1_in.buttons;
     return (b & dyn_bit[0]) ? LV_GHOST : (b & dyn_bit[1]) ? LV_HARD : LV_NORM;
 }
+#if BOARD_SMK37
+/* SMK-37 Pro: velocity keys and pads. A key's velocity (a pad: its white key's, smk_input.h); on the drum
+ * track it picks the level unless OCT- / OCT+ is held */
+static uint32_t key_vel(uint32_t k) { return fm1_in.key_vel[SMK_KEY_F3 + k]; }
+static uint32_t smk_vel_lvl(uint32_t v)            /* a velocity -> the drum level, unless OCT- / OCT+ is held */
+{
+    if (fm1_in.buttons & (dyn_bit[0] | dyn_bit[1]))
+        return key_lvl();
+    return v < 40u ? LV_GHOST : v < 80u ? LV_SOFT : v > 112u ? LV_HARD : LV_NORM;
+}
+static uint32_t key_lvl_of(uint32_t k) { return smk_vel_lvl(key_vel(k)); }
+#else
+#define key_vel(k) 100u
+#define key_lvl_of(k) key_lvl()
+#endif
 
 /* CHORD+: the modifiers held (the black keys down in chord mode) */
 static uint32_t chord_mods(void)
@@ -1529,7 +1544,7 @@ static void key_down(uint32_t k)
         return;
     }
     if (is_drum(t)) {                                 /* the drum track: the key's lane */
-        uint32_t lane = lane_of_key(k), lvl = key_lvl();
+        uint32_t lane = lane_of_key(k), lvl = key_lvl_of(k);
         kb_nt[k][0] = (uint8_t)lane;
         kb_n[k] = 1;
         if (layer == LY_ROLL) {
@@ -1574,9 +1589,9 @@ static void key_down(uint32_t k)
             in_chord = kb_n[k] > 1u ? kb_nt[k] : 0;
             in_chord_n = kb_n[k];
             in_chord_i = i;
-            input_on(t, kb_nt[k][i], 100);
+            input_on(t, kb_nt[k][i], key_vel(k));
             in_chord = 0;
-            midi_out_note(mc, (uint32_t)kb_nt[k][i], 100u);
+            midi_out_note(mc, (uint32_t)kb_nt[k][i], key_vel(k));
         }
         in_key = 0;
         /* the pen of the SEQ layer: the keys down now (a chord), else this note */
@@ -1665,12 +1680,96 @@ static void audition_block(void)
             trk_note_on(TDRUM, LANE_NOTE[l], lvl_vel((lv >> (2u * l)) & 3u, 100));
 }
 
+#if BOARD_SMK37
+/* the SMK's 10 keys beyond the FM-1's 27 (C3..E3 below, G#5..C6 above), in PLAY. A synth track: plain notes,
+ * chromatic from the FM-1 key map (53 = F3), with OCT and TRANS. The drum track: more drums, as the 27 keys do
+ * (a white key a sound, a black key the white key's left of it): C3 KICK, D3 SNARE, E3 HAT below; A5 OPEN HAT,
+ * B5 CRASH, C6 RIDE above (G#5: COWBELL, G5's). Only the 16 lanes: projects stay SLOOP / FM-1 compatible. */
+static uint8_t ext_note[FM1_NKEY], ext_trk[FM1_NKEY];   /* note + 1 sounding, 0 = none; 0x80 | lane: a drum */
+static const int8_t EXT_LANE[FM1_NKEY] = {0, 0, 2, 2, 4, [32] = 15, [33] = 5, [34] = 5, [35] = 11, [36] = 12};
+static uint32_t ext_quiet[16];                    /* a lane hit from an outer key: no pad light until (ms) */
+static void ext_keys_block(void)
+{
+    int32_t e;
+    while ((e = smk_extkey_take()) >= 0) {
+        uint32_t k = (uint32_t)e >> 8, v = (uint32_t)e & 0xFFu, sel = song.sel % NTRK, mc;
+        track_t *t = &trk[sel];
+        if (k >= FM1_NKEY)
+            continue;
+        if (!v) {
+            if (ext_note[k] & 0x80u) {                    /* a drum key let go */
+                uint32_t lane = ext_note[k] & 15u;
+                if (ft_on && ft_trk == TRK_DRUM)
+                    ft_note_off(lane);
+                mc = trk_midi_ch(TRK_DRUM);
+                midi_out_event(0x08u | (0x80u | mc) << 8 | (uint32_t)LANE_NOTE[lane] << 16);
+                ext_note[k] = 0;
+            } else if (ext_note[k]) {
+                t = &trk[ext_trk[k] % NTRK];
+                mc = trk_midi_ch(ext_trk[k] % NTRK);
+                input_off(t, ext_note[k] - 1u);
+                midi_out_event(0x08u | (0x80u | mc) << 8 | (uint32_t)(ext_note[k] - 1u) << 16);
+                ext_note[k] = 0;
+            }
+            continue;
+        }
+        if (layer_now() != LY_PLAY || ext_note[k])
+            continue;
+        if (is_drum(t)) {                                 /* more drums */
+            uint32_t lane = (uint32_t)EXT_LANE[k] & 15u, lvl = smk_vel_lvl(v);
+            ext_note[k] = (uint8_t)(0x80u | lane);
+            ext_quiet[lane] = fm1_ms + 600u;
+            drum_input(lane, lvl, 0, 1);
+            mc = trk_midi_ch(TRK_DRUM);
+            midi_out_event(0x09u | (0x90u | mc) << 8 | (uint32_t)LANE_NOTE[lane] << 16 | lvl_vel(lvl, 100) << 24);
+            continue;
+        }
+        {
+            uint32_t n = (uint32_t)clamp(53 + (int32_t)k - (int32_t)SMK_KEY_F3 + 12 * song.octave + t->p[P_TRANS], 0, 127);
+            ext_note[k] = (uint8_t)(n + 1u);
+            ext_trk[k] = (uint8_t)sel;
+            mc = trk_midi_ch(sel);
+            input_on(t, n, v);
+            midi_out_event(0x09u | (0x90u | mc) << 8 | n << 16 | v << 24);
+        }
+    }
+}
+#endif
+
+#if BOARD_SMK37
+/* SMK-37 Pro: the pad picker's preview (ui_pick.c), a short note on the selected synth track */
+static volatile uint8_t pick_aud_req;            /* note + 1, 0 = none */
+static uint8_t pick_aud_note, pick_aud_trk;      /* sounding: note + 1 */
+static uint32_t pick_aud_t;
+static void pick_aud_block(void)
+{
+    uint32_t r = pick_aud_req;
+    if (pick_aud_note && (r || fm1_ms - pick_aud_t >= 350u)) {
+        trk_note_off(&trk[pick_aud_trk], pick_aud_note - 1u);
+        pick_aud_note = 0;
+    }
+    if (!r)
+        return;
+    pick_aud_req = 0;
+    pick_aud_trk = (uint8_t)(song.sel % NTRK);
+    if (is_drum(&trk[pick_aud_trk]))
+        return;
+    pick_aud_note = (uint8_t)r;
+    pick_aud_t = fm1_ms;
+    trk_note_on(&trk[pick_aud_trk], r - 1u, 100);
+}
+#endif
+
 static void keyboard_block(void)
 {
     uint32_t cur = fm1_in.notes, ch = cur ^ kb_prev, k, r;
     audition_block();
     if (er_mute && layer_now() != LY_ERASE)
         er_mute = 0;                                  /* EDIT let go: its keys erase again (2.6) */
+#if BOARD_SMK37
+    ext_keys_block();
+    pick_aud_block();
+#endif
     if (!(layer_buttons() & ly_bit[LY_ROLL]))         /* ARP up (and not locked): the rolls end (the keys stay silent) */
         for (r = 0; r < NROLL; r++)
             if (roll[r].on)
