@@ -207,7 +207,7 @@
       g.gain.setValueAtTime(0, a2.currentTime);
       const t0 = performance.now();
       await every(() => { const p = (performance.now() - t0) / 1800;
-        x.fillStyle = '#1e1418'; x.fillRect(0, 0, 720, 720);
+        x.fillStyle = '#000'; x.fillRect(0, 0, 720, 720);   // (black, as the logo's own background)
         const w = 520, h = w * logo.naturalHeight / logo.naturalWidth; x.globalAlpha = Math.min(1, p * 4); x.drawImage(logo, (720 - w) / 2, 250 - h / 2, w, h);
         x.font = '700 44px "Pixelify Sans",monospace'; x.textAlign = 'center'; x.fillStyle = '#f07818'; x.fillText('winampFM Synth', 360, 560); x.globalAlpha = 1;
         return p >= 1; });
