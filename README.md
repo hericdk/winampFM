@@ -5,6 +5,7 @@
 - **Site, installer and 3D simulator (the real firmware in your browser, with sound):** https://hericdk.github.io/winampFM/
 - **Install on your FM-1:** open the site in Chrome or Edge, connect the FM-1 by USB and press install. The package is also in [`release/winampfm-0.1.fwsc`](release/).
 - **License:** GPL-3.0-only, like SLOOP, Felucca and FM1 Quest.
+- **M-Vave SMK-37:** see [SMK-37 instructions](SMK37.md). Until this project's releases include SMK-37 packages, unofficial builds can be installed with the web installer: https://genkigenki.github.io/smk37/
 
 ## What is unique to winampFM
 

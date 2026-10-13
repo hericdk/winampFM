@@ -14,6 +14,11 @@
  * Painted in small windows of the screen (the cv_* canvas with absolute coordinates through cv_ox / cv_oy): a part is
  * repainted only when what it shows changed, or while it animates (spectrum, marquee, curve, visualizer). */
 #include "wfm_font.h"
+#if BOARD_SMK37
+#define WFM_FOR "SYNTH FOR THE SMK-37"
+#else
+#define WFM_FOR "SYNTH FOR THE FM-1"
+#endif
 
 /* ---------------------------------------------------------------- colours (measured on the reference skin) */
 #define WC_FR0 RGB(0x0c, 0x0c, 0x15)     /* outline */
@@ -1955,6 +1960,22 @@ static UI_NOINLINE int wfm_knobs(void)
     }
     return 1;
 }
+#if BOARD_SMK37
+/* the SMK-37's < >: a SELECT detent on the player (the effect group; on the visualizer its picture), never the tempo */
+static UI_NOINLINE int wfm_lr(int32_t s)
+{
+    if (!wfm_here() || ui.layer != LY_PLAY || ui.hold_kind) return 0;
+    if (wf_view == 2u) {
+        wv_mode = (uint8_t)((wv_mode + (s > 0 ? 1u : WV_N - 1u)) % WV_N);
+        wf_say(14);
+    } else {
+        if (wf_view == 1u) wf_grp = (uint8_t)clamp((int32_t)wf_grp + (s > 0 ? 1 : -1), 0, 4);
+        wf_view = 1;
+        wf_say(12);
+    }
+    return 1;
+}
+#endif
 
 /* ---------------------------------------------------------------- the boot screen (splash.c calls it): a Winamp window, the bolt, the name */
 static UI_NOINLINE void wf_big(int32_t x, int32_t y, int32_t z, const char *s, uint16_t col)   /* the 5 x 7 face, z times */
@@ -1994,7 +2015,7 @@ static void wfm_splash(void)
         x = 120 - wf_bigw(3, "WINAMPFM") / 2;                       /* WINAMP in the display green, FM in the bolt's orange */
         wf_big(x, 132, 3, "WINAMP", WC_GRN);
         wf_big(x + wf_bigw(3, "WINAMP") + 3, 132, 3, "FM", RGB(0xf0, 0x78, 0x18));
-        wf_textc(120, 160, 1, "SYNTH FOR THE FM-1", WC_LAB);
+        wf_textc(120, 160, 1, WFM_FOR, WC_LAB);
         wf_inset(14, 186, 212, 13, WC_LCD);
         wf_textc(120, 189, 1, "*** LOADING ***", WC_GRN);
         wf_textc(120, 210, 0, "WINAMPFM 0.1  BASED ON SLOOP 2.6  GPL-3.0", WC_LOFF);
@@ -2155,7 +2176,7 @@ static void wfb_about(void)
         }
         wf_foot2("PRESETS", "CREDITS", "OCT-", "BACK");
     } else {
-        static const char *const L[10] = {"WINAMPFM SYNTH FOR THE FM-1", "INTERFACE: HERICDK", "BASED ON SLOOP 2.6 (ISOD89)", "FELUCCA (KUROGEDELIC), FM1 QUEST",
+        static const char *const L[10] = {"WINAMPFM " WFM_FOR, "INTERFACE: HERICDK", "BASED ON SLOOP 2.6 (ISOD89)", "FELUCCA (KUROGEDELIC), FM1 QUEST",
                                           "R/MVAVEFM1 COMMUNITY", "SAMPLES: VERSILIAN, SONIC PI", "PHASE: CRISPYZEBRA (GPL)", "VOICE: KLATTSCH (MIT)",
                                           "LOOK INSPIRED BY WINAMP 2.X", "GPL-3.0, NO WARRANTY"};
         uint32_t i;

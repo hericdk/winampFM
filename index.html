@@ -125,7 +125,7 @@
     <div class="ihead">
       <button id="go" disabled data-t="install"></button>
       <span class="ver"><b>winampFM v0.1</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
-      <div class="imeta"><p class="small" data-t="intro"></p><p class="small" data-t="warn"></p></div>
+      <div class="imeta"><p class="small" data-t="intro"></p><p class="small" data-t="warn"></p><p class="small" data-t="smk"></p></div>
     </div>
     <div class="prog"><progress id="bar" max="100" value="0"></progress><span id="pct">0%</span></div>
     <p id="status" aria-live="polite"></p>
@@ -388,9 +388,19 @@ const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
 const MAXDATA = 512;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IS_OTA = (id) => /^ota-/i.test(id.model);
-// the update loader of SLOOP / Felucca packages ("ota-FM-1_9XX"). A device left in the update mode of another
-// firmware (the stock updater's loader) is never written: its loader may lay the image out differently.
-const OUR_LOADER = (id) => /^ota-FM-1_9\d\d$/i.test(id.text);
+// the update loader of SLOOP / Felucca packages ("ota-FM-1_9XX", "ota-SMK-37 Pro_9XX"; the SMK-37 builds also under the
+// Elite's and the MKE-P37's model name, other SMK-37 ports' loaders _7XX / _8XX). A device left in the update mode of another
+// firmware (the stock updater's loader) is never written: its loader may lay the image out differently. The bare
+// "SMK-37" name ("ota-SMK-37_931") is the RAM updater of other SMK-37 firmwares: another package format, so not ours.
+const OUR_LOADER = (id) => /^ota-(FM-1_9|(SMK-37 Pro|SMK-37 Elite|MKE-P37)_[789])\d\d$/i.test(id.text);
+// SMK-37 firmwares with their own updater ("SMK-37_9NN"): nothing is sent to them
+const OTHER_SMK = (id) => /^(ota-)?SMK-37_9\d\d$/i.test(id.text);
+// the M-Vave SMK-37 Pro, SMK-37 Elite, MKE-P37 and Starrykey 37 Play: one keyboard under several model names, so a
+// package for one runs on all of them; an FM-1 is another device (FM-1 and SMK-37 packages never mix)
+const SMK_FAMILY = /^(ota-)?(SMK-37([ +].*)?|MKE-P37|STARRYKEY-37.*)$/i;
+const sameKeyboard = (a, b) => a === b || (SMK_FAMILY.test(a) && SMK_FAMILY.test(b));
+// the MIDI ports find() probes: the FM-1's and the SMK-37 models' names and the firmwares'; other gear is never sent anything
+const PORT_RE = /fm-1|smk|elite|mke-p37|starry|felucca|sloop|ota|composite|sinco|usb-midi/i;
 
 // errors carry a code the pages translate: notfound, model, stopped, noloader, lost, noreturn,
 // mismatch (detail: the identity the device reports), badreq, foreign (detail: the loader's identity)
@@ -439,7 +449,7 @@ function parseRequest(pkt) {
 function parseIdentity(pkt) {
   const d = unpack7(pkt.slice(1, -1));
   if (d.length !== 34 || d[0] !== 0 || d[1] !== 0x59 || d[2] !== 0x11) return null;
-  const txt = String.fromCharCode(...d.slice(6, 33)).replace(/\0+$/, "");
+  const txt = String.fromCharCode(...d.slice(6, 33)).split("\0")[0];   // (some firmwares end the text early)
   const m = /^([^_]+)_(\d+)$/.exec(txt);
   return m ? { text: txt, model: m[1], version: parseInt(m[2], 10) } : null;
 }
@@ -498,7 +508,7 @@ class Updater {
     const outs = [...this.access.outputs.values()];
     for (const input of this.access.inputs.values()) {
       if (input.state === "disconnected") continue;
-      if (!/fm-1|felucca|ota|composite|sinco|usb-midi/i.test(input.name || "")) continue;   // never probe other gear
+      if (!PORT_RE.test(input.name || "")) continue;   // never probe other gear
       const output = outs.find((o) => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
       if (!output) continue;
       try { await input.open(); await output.open(); } catch (_) { continue; }
@@ -549,13 +559,15 @@ class Updater {
     }
   }
 
-  // full install: running firmware -> loader -> new firmware
+  // full install: running firmware -> loader -> new firmware. opts.anyModel: the package may be for another model of the
+  // same keyboard (an SMK-37 Pro package on a unit that reports SMK-37 Elite); never an FM-1 one on an SMK-37, nor back
   async install(image, product, onStep, opts = {}) {
     const step = onStep || (() => {});
     const dev = await this.find((id) => !IS_OTA(id));
     if (!dev) throw fail("notfound", "FM-1 not found (USB cable, and no other app using it?)");
+    if (OTHER_SMK(dev.id)) { dev.link.close(); throw fail("other", `the keyboard runs a firmware with its own updater (${dev.id.text}): nothing was sent`, " (" + dev.id.text + ")"); }
     const [model] = product.split("_");
-    if (dev.id.model !== model) { dev.link.close(); throw fail("model", `the device is ${dev.id.text}, the package is for ${product}`); }
+    if (dev.id.model !== model && !(opts.anyModel && sameKeyboard(dev.id.model, model))) { dev.link.close(); throw fail("model", `the device is ${dev.id.text}, the package is for ${product}`); }
     // Melodee (a Felucca fork with its own data layout and release identities FM-1_9 + 3 to 5 digits): flashing over it was not tested.
     // Say so once, with the safe way (its own "Return to official V15", which saves a backup first); pressing Install again goes ahead.
     if (/^FM-1_9\d{3,5}$/.test(dev.id.text) && !opts.melodeeAck) { dev.link.close(); throw fail("melodee", "this FM-1 runs Melodee", " (" + dev.id.text + ")"); }
@@ -564,10 +576,17 @@ class Updater {
     await sleep(2000);
     const s1 = await this.serve(dev.link, image, 0xE0000000, 8000, (n) => step("verify", n));
     dev.link.close();
-    if (!s1.finished) throw fail(s1.lost ? "lost" : "stopped", `the device ${s1.lost ? "was disconnected" : "stopped"} after ${s1.served} requests: nothing was written`);
+    // some firmwares restart into their loader at once, without step 1: such a loader (ours, of this keyboard) goes on
+    const jumped = !s1.finished && s1.lost && s1.served === 0;
+    if (!s1.finished && !jumped) throw fail(s1.lost ? "lost" : "stopped", `the device ${s1.lost ? "was disconnected" : "stopped"} after ${s1.served} requests: nothing was written`);
     step("loader");
     await sleep(3000);
-    const ota = await this.waitFor(IS_OTA, 30000);
+    const ota = await this.waitFor(IS_OTA, jumped ? 15000 : 30000);
+    if (jumped && !(ota && OUR_LOADER(ota.id) && sameKeyboard(ota.id.model.replace(/^ota-/i, ""), dev.id.model))) {
+      if (ota) ota.link.close();
+      throw fail(ota ? "foreign" : "lost", ota ? `the device restarted into the update mode of another firmware (${ota.id.text}): nothing was written`
+        : "the device was disconnected after 0 requests: nothing was written", ota ? ota.id.text : "");
+    }
     if (!ota) throw fail("noloader", "the update loader did not appear. Replug the USB cable and press Install again: the device stays in update mode until it is finished.");
     const s2 = await this.write(ota, image, step);
     if (!s2.finished) throw fail(s2.lost ? "lost" : "stopped", `the loader ${s2.lost ? "was disconnected" : "stopped"} after ${s2.served} requests. Replug and press Install again to resume.`);
@@ -593,13 +612,21 @@ class Updater {
   // resume: the device is already in update mode (loader) -> true when the write finished. Only SLOOP's
   // own loader is resumed, except for the return to the official firmware (opts.product: the official
   // package, its identity checked once the FM-1 is back, after Felucca 1.0): that one is the official
-  // loader's own image, as M-UPGRADE would write it
+  // loader's own image, as M-UPGRADE would write it. opts.package: the identity of the package being
+  // written; the loader's model must match it (or opts.product's) by install()'s rule (the same model, or with
+  // opts.anyModel another model of the same keyboard), and without either identity nothing is written
   async resume(image, onStep, opts = {}) {
     const ota = await this.find(IS_OTA);
     if (!ota) return false;
     if (!OUR_LOADER(ota.id) && !opts.product) {
       ota.link.close();
       throw fail("foreign", `the FM-1 is in the update mode of another firmware (${ota.id.text}): finish that update with its own updater`, ota.id.text);
+    }
+    const want = opts.product || opts.package || "";
+    const [lm, pm] = [ota.id.model.replace(/^ota-/i, ""), want.split("_")[0]];
+    if (!want || (lm !== pm && !(opts.anyModel && sameKeyboard(lm, pm)))) {
+      ota.link.close();
+      throw fail("model", `the device is in the update mode of ${ota.id.text}, the package is for ${want || "an unknown model"}`, ota.id.text);
     }
     const step = onStep || (() => {});
     if (!(await this.write(ota, image, step)).finished) return false;
@@ -635,6 +662,9 @@ const TEXT = {
     denied: "MIDI (SysEx) access was not allowed. Allow MIDI in the site settings (address bar) and press Install again.",
     notfound: "FM-1 not found. Check the USB cable (a data cable), close other apps that use MIDI, and press Install again.",
     model: "The connected device is not an FM-1.",
+    other: "This keyboard runs a firmware with its own updater. Nothing was sent. Return it to the M-Vave firmware with that updater first, then press Install again",
+    smk: "M-Vave SMK-37 (SMK-37 Pro, SMK-37 Elite, MKE-P37): the same button installs winampFM for the SMK-37 when this site has its packages. The way back is M-Vave's updater, M-UPGRADE, with the keyboard's own firmware.",
+    nosmk: "This site has no winampFM package for the SMK-37 yet. Nothing was sent.",
     lost: "The USB connection was lost. Replug it and press Install again.",
     noloader: "The FM-1 in update mode was not found. Replug the USB cable and press Install again (it stays in update mode until it is finished).",
     noreturn: "The FM-1 did not come back. Power-cycle it.",
@@ -666,7 +696,11 @@ const TEXT = {
     stopped: "Parou. Reconecte o cabo USB e aperte Instalar de novo.", error: "Erro: ",
     denied: "O acesso MIDI (SysEx) não foi permitido. Permita MIDI nas configurações do site (barra de endereço) e aperte Instalar de novo.",
     notfound: "FM-1 não encontrado. Confira o cabo USB (de dados), feche outros apps que usam MIDI e aperte Instalar de novo.",
-    model: "O aparelho conectado não é um FM-1.", lost: "A conexão USB caiu. Reconecte e aperte Instalar de novo.",
+    model: "O aparelho conectado não é um FM-1.",
+    other: "Este teclado roda um firmware com o seu próprio atualizador. Nada foi enviado. Volte ao firmware da M-VAVE com esse atualizador e aperte Instalar de novo",
+    smk: "M-VAVE SMK-37 (SMK-37 Pro, SMK-37 Elite, MKE-P37): o mesmo botão instala o winampFM para o SMK-37 quando este site tiver os pacotes dele. Para voltar: o atualizador da M-VAVE, M-UPGRADE, com o firmware do próprio teclado.",
+    nosmk: "Este site ainda não tem o pacote do winampFM para o SMK-37. Nada foi enviado.",
+    lost: "A conexão USB caiu. Reconecte e aperte Instalar de novo.",
     noloader: "O FM-1 em modo de atualização não foi encontrado. Reconecte o cabo e aperte Instalar de novo (ele fica nesse modo até terminar).",
     noreturn: "O FM-1 não voltou. Desligue e ligue de novo.", mismatch: "Gravado, mas o FM-1 informa outra versão: ",
     foreign: "O FM-1 está no modo de atualização de outro firmware. Termine essa atualização com o atualizador dele (M-UPGRADE) e aperte Instalar de novo: ",
@@ -693,6 +727,10 @@ const say = (txt) => { lastKey = null; $("status").textContent = txt; };
 const log = (t) => { $("log").textContent += t + "\n"; };
 let image = null;
 const meta = {"version": "0.1", "product": "FM-1_900", "pkg": "release/winampfm-0.1.fwsc", "sha256": "f2c77b18ccbe839fcb8e4e2c539e47d0cee94ee3e16d00c5a6484b8bb7824cb4"};
+/* the M-Vave SMK-37 packages (SMK37.md), the SMK-37 Pro's first: fetched only when an SMK-37 is connected, each checked as
+   the FM-1's. One entry a model: {"product": "SMK-37 Pro_900", "pkg": "release/winampfm-0.1-smk37.fwsc", "sha256": "..."},
+   then SMK-37 Elite_900 (-smk37-elite.fwsc) and MKE-P37_900 (-smk37-mke.fwsc). None yet: an SMK-37 is told so, nothing is sent */
+const SMK_PKGS = [];
 
 let writing = false, stock = null;
 const lockAll = (on) => {
@@ -736,6 +774,24 @@ const failed = (e) => {
   log(String(e && e.stack || e));
 };
 
+/* the package for a connected model: the FM-1's (loaded with the page), or the SMK-37 one of that model (else the SMK-37
+   Pro's: anyModel), fetched and checked now. FM-1 and SMK-37 never mix: install() and resume() check the model too */
+const smkLoaded = {};
+async function packageFor(model) {
+  if (!SMK_FAMILY.test(model)) return { image, product: meta.product, anyModel: false };
+  if (!SMK_PKGS.length) throw fail("nosmk", "no SMK-37 package on this site: nothing was sent");
+  const e = SMK_PKGS.find((p) => p.product.split("_")[0].toUpperCase() === model.toUpperCase()) || SMK_PKGS[0];
+  if (!smkLoaded[e.product]) {
+    const r = await fetch(e.pkg);
+    if (!r.ok) throw fail("loadfail", `${e.pkg}: HTTP ${r.status}`, `${e.pkg}: HTTP ${r.status}`);
+    const pkg = new Uint8Array(await r.arrayBuffer());
+    const h = [...new Uint8Array(await crypto.subtle.digest("SHA-256", pkg))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    if (productOf(pkg) !== e.product || h !== e.sha256) { log(`sha256 ${h}, expected ${e.sha256}`); throw fail("badpkg", "the SMK-37 package is damaged"); }
+    smkLoaded[e.product] = logicalImage(pkg);
+  }
+  return { image: smkLoaded[e.product], product: e.product, anyModel: e.product.split("_")[0].toUpperCase() !== model.toUpperCase() };
+}
+
 $("go").addEventListener("click", async () => {
   if (writing) return;
   lockAll(true);
@@ -747,9 +803,14 @@ $("go").addEventListener("click", async () => {
     const ota = await up.find((id) => /^ota-/i.test(id.model));
     if (ota) {
       ota.link.close();
-      sayK((await up.resume(image, step)) ? "done" : "stopped");
+      const pk = await packageFor(ota.id.model.replace(/^ota-/i, ""));
+      sayK((await up.resume(pk.image, step, { package: pk.product, anyModel: pk.anyModel })) ? "done" : "stopped");
     } else {
-      await up.install(image, meta.product, step);
+      const dev = await up.find((id) => !IS_OTA(id));
+      if (dev) dev.link.close();
+      if (dev && OTHER_SMK(dev.id)) throw fail("other", "the keyboard runs a firmware with its own updater: nothing was sent", " (" + dev.id.text + ")");
+      const pk = await packageFor(dev ? dev.id.model : "FM-1");
+      await up.install(pk.image, pk.product, step, { anyModel: pk.anyModel });
     }
   } catch (e) { failed(e); }
   lockAll(false);

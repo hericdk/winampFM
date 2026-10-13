@@ -79,6 +79,79 @@ static void hexs(char *b, uint32_t v)
     b[8] = 0;
 }
 
+#if BOARD_SMK37
+/* the SMK-37 Pro's 4 faders, tracks 1..4 (4 = drums), by FADER BANK (ui_input.c smk_fbank): A level, B the
+ * track's filter (P_TFLT: low-pass left, open in the middle, high-pass right), C reverb send, D delay send.
+ * A fader takes over only once it moves (also after a bank change), so nothing jumps. */
+static void smk_faders(void)
+{
+    static uint8_t last[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    uint32_t i;
+    if (smk_fbank_new) {                                  /* a new bank: wait for each fader to move */
+        smk_fbank_new = 0;
+        for (i = 0; i < 4u; i++)
+            last[i] = 0xFF;
+    }
+    for (i = 0; i < 4u && i < NTRK; i++) {
+        uint32_t v = fm1_in.fader[i];
+        int16_t *pv;
+        if (last[i] == 0xFF || fm1_in.frames < 200u) {   /* (the first readings settle) */
+            last[i] = (uint8_t)v;
+            continue;
+        }
+        if (v == last[i])
+            continue;
+        last[i] = (uint8_t)v;
+        switch (smk_fbank) {
+        case 1:
+            trk[i].p[P_TFLT] = (int16_t)((int32_t)v - 64);
+            break;
+        case 2:
+            pv = i == TRK_DRUM ? &song.g[G_DRREV] : &trk[i].p[P_REV];
+            *pv = (int16_t)v;
+            break;
+        case 3:
+            pv = i == TRK_DRUM ? &song.g[G_DRDLY] : &trk[i].p[P_DLY];
+            *pv = (int16_t)v;
+            break;
+        default:
+            pv = i == TRK_DRUM ? &song.g[G_DRLVL] : &trk[i].p[P_LEVEL];
+            *pv = (int16_t)v;
+            break;
+        }
+        ui.force = 1;
+    }
+}
+
+/* the wheels (stock: mux C address 4 = pitch, 5 = mod), self-calibrating (the travel is short: raw ~445..640
+ * pitch, ~474..629 mod on a unit). Pitch: smk_wheel.h (+-SMK_BEND_ST semitones, a dead band around the rest,
+ * which follows a slow drift in time); mod: 0..127, up (lower raw) = more (voice.c perf_*) */
+#include "smk_wheel.h"
+#if SMK_PW_ST != SMK_BEND_ST
+#error "smk_wheel.h SMK_PW_ST and voice.c SMK_BEND_ST differ"
+#endif
+static void smk_wheels(void)
+{
+    enum { DEAD = 12, MOD_LO = 485, MOD_HI = 615 };
+    static smk_pw_t pw;
+    static int32_t mlo, mhi;
+    int32_t m = fm1_in.wheel[1], mw;
+    if (fm1_in.frames < 300u)                     /* (the readings settle) */
+        return;
+    if (!mhi) {
+        mlo = m < MOD_LO ? m : MOD_LO;
+        mhi = m > MOD_HI ? m : MOD_HI;
+    }
+    if (m < mlo)
+        mlo = m;
+    if (m > mhi)
+        mhi = m;
+    mw = mhi - m <= DEAD ? 0 : (mhi - m - DEAD) * 127 / (mhi - mlo - DEAD > 1 ? mhi - mlo - DEAD : 1);
+    perf_bend = smk_pw_bend(&pw, fm1_in.wheel[0], fm1_ms);
+    perf_modw = clamp(mw, 0, 127);
+}
+#endif
+
 static void fm1_fault(const fm1_crash_t *c)
 {
     char b[12];
@@ -167,11 +240,23 @@ static void boot_keys(void)
             fm1_led_lv[14 + i] = (uint8_t)(T < 2430 ? boot_lv(T - (i / 3) * 270, 90, 0, 420) : boot_lv(T - 2430, 160, 120, 600));
         for (i = 0; i < 14; i++)
             fm1_led_lv[i] = (uint8_t)(T < 2430 ? 0u : boot_lv(T - 2430, 160, 120, 600));
+#if BOARD_SMK37
+        for (i = 0; i < 16; i++) {                      /* the SMK-37 has no key LEDs: the wave runs over the pads, column by column */
+            uint32_t lv = fm1_led_lv[14 + (i & 7) * 3];
+            padled_set((uint32_t)i, (uint8_t)(lv * 2u), (uint8_t)(lv * 11u), (uint8_t)(lv * 2u));   /* the player's green */
+        }
+        padled_flush();
+#endif
         fm1_wdt_feed();
         fm1_delay_ms(10);
     }
     for (i = 0; i < (int32_t)FM1_NKEY; i++)
         fm1_led_lv[i] = 0;
+#if BOARD_SMK37
+    for (i = 0; i < 16; i++)
+        padled_set((uint32_t)i, 0, 0, 0);
+    padled_flush();
+#endif
     fm1_irq_off();
     trk[0] = boot_trk;                                  /* the track as it was (its voices are idle again) */
     for (i = 0; i < (int32_t)G_COUNT; i++) song.g[i] = gs[i];
@@ -205,11 +290,18 @@ static void fm1_main(void)
     felucca_dbg.prev_rst = fm1_boot.p3_rst;
     fm1_input_init();
     fm1_adc_init();
+#if BOARD_SMK37 && FELUCCA_FLASH
+    if (flash_ok)                                   /* the factory key / pad velocity curves (USRTRIM, read only) */
+        smk_trim_load(fm1_xip_ptr(SMK_TRIM_FLASH));
+#endif
     panel_init();
     felucca_init();
     audio_init();
 #if FELUCCA_CDC
     usb_cdc_on = usb_serial;                            /* menu USB SERIAL (persist_boot read it): before USB starts */
+#if defined(FELUCCA_CDC_ON) && FELUCCA_CDC_ON
+    usb_cdc_on = 1;                                     /* (bring-up builds: the console without the menu) */
+#endif
 #endif
     usb_start();
 #if FELUCCA_UART
@@ -312,6 +404,11 @@ static void fm1_main(void)
         ui_input();
         felucca_dbg.stage = 2;
         ui_leds();
+#if BOARD_SMK37
+        smk_faders();
+        smk_wheels();
+        padled_flush();                                 /* the pads' colours, between LCD transfers */
+#endif
         ui_draw();
         felucca_dbg.stage = 8;
         autosave_tick();                                /* the working project into flash, when quiet */
@@ -321,6 +418,9 @@ static void fm1_main(void)
         felucca_dbg.stage = 9;
         while (fm1_ms - m < 15u) {                               /* ~60 UI frames/s at most */
             ui_input();
+#if BOARD_SMK37
+            smk_wheels();                       /* (bends follow the wheel, not the screen) */
+#endif
 #if FELUCCA_OTA
             ed_service();                       /* editor replies without waiting for the next frame */
 #endif

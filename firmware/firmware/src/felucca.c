@@ -6,10 +6,16 @@
 #include "fm1_sys.h"
 #include "fm1_irq.h"
 #include "fm1_guard.h"
+#if BOARD_SMK37
+#include "smk_input.h"           /* keys, buttons, encoders, LEDs, pads, faders, wheels, battery */
+#else
 #include "fm1_input.h"
+#endif
 #include "fm1_timer.h"
 #include "fm1_audio.h"
+#if !BOARD_SMK37
 #include "fm1_adc.h"
+#endif
 #include "fm1_lcd_hw.h"
 #include "felucca_tables.h"
 
@@ -30,7 +36,11 @@
 #define FELUCCA_OTA_DRYRUN 0     /* 1 = stage, ask "success", then undo: no record, no reset */
 #endif
 #ifndef FELUCCA_ID
+#if BOARD_SMK37
+#define FELUCCA_ID "SMK-37 Pro_900"   /* package identity (build.py: the .fwsc marker string) */
+#else
 #define FELUCCA_ID "FM-1_900"    /* package identity (build.py: the .fwsc marker string) */
+#endif
 #endif
 #ifndef FELUCCA_CDC
 #define FELUCCA_CDC 1            /* USB CDC-ACM serial console */
@@ -43,7 +53,15 @@
 #endif
 #include "usb.c"
 #ifndef FELUCCA_UART
+#if BOARD_SMK37
+#define FELUCCA_UART 0           /* SMK-37 Pro: TRS MIDI OUT (UART1 TX, PC7), no MIDI IN; PH8 is a key-matrix
+                                  * row there and must never become UART RX. TODO: a TX driver (see the fm1-to-smk37 guide) */
+#else
 #define FELUCCA_UART 1           /* TRS MIDI IN on UART1 (3.5 mm jack) */
+#endif
+#endif
+#if BOARD_SMK37 && FELUCCA_UART
+#error "BOARD_SMK37: midi_uart.c is the FM-1 MIDI IN driver (RX on PH8, a key-matrix row on the SMK)"
 #endif
 #if FELUCCA_UART
 #include "midi_uart.c"
@@ -57,11 +75,20 @@
 #include "ui_song.c"
 #include "ui_studio.c"
 #include "icons.c"           /* parameter icons (FELUCCA_ICONS), used by ui_draw.c */
+#if BOARD_SMK37
+#include "ui_pick.c"          /* SMK-37 Pro: the pad sound picker */
+#endif
 #include "ui_draw.c"
 #include "ui_layers.c"       /* hold a function button: what the keys and knobs do (TE style) */
 #include "ui_menu.c"
 #include "ui_winamp.c"       /* winampFM: the player screen */
+#if BOARD_SMK37
+#include "ui_padgrid.c"       /* SMK-37 Pro: steps and tiles in reading order */
+#endif
 #include "ui_input.c"
+#if BOARD_SMK37
+#include "ui_fbank.c"         /* SMK-37 Pro: the FADER BANK screen */
+#endif
 #ifndef FELUCCA_FLASH
 #define FELUCCA_FLASH 1          /* flash driver + storage.c */
 #endif
@@ -122,7 +149,11 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)
 #include "project.c"
 #if FELUCCA_OTA
 static uint8_t recovery_active;
+#if BOARD_SMK37
+#define OTA_IDENTITY (recovery_active ? SMK_MODEL "_000" : FELUCCA_ID)
+#else
 #define OTA_IDENTITY (recovery_active ? "FM-1_000" : FELUCCA_ID)
+#endif
 #include "ota.c"
 static void recovery_poll(void);
 static uint32_t ota_now_ms(void) { return fm1_ms; }
@@ -148,7 +179,11 @@ static int ota_prog(uint32_t off, const void *p, uint32_t n)
 static int ota_fread(uint32_t off, void *p, uint32_t n) { return st_read(off, p, n); }
 static void ota_show(uint32_t step, int32_t code)
 {
+#if BOARD_SMK37   /* step 5 stays on screen while the loader writes the flash: say so */
+    static const char *const STEP[] = {"", "PACKAGE", "CHECK HEAD", "LOADER", "CONFIRM", "UPDATING..."};
+#else
     static const char *const STEP[] = {"", "PACKAGE", "CHECK HEAD", "LOADER", "CONFIRM", "RESTART"};
+#endif
     char b[24];
     if (recovery_active) return;             /* keep polled USB alive during OTA */
     lcd_fill(0, 0, 240, 240, C_BLACK);

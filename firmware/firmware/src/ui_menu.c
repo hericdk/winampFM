@@ -3,7 +3,13 @@
 /* SLOOP menu (HOME held): IMPORTER (the user samples and songs: see, erase), LOWCUT, ZOOM, LIGHTS, KEYS, NOTES, USB AUDIO, HARDWARE CALIBRATION, ABOUT. */
 /* ------------------------------------------------------------ menu --- */
 enum { MI_LED, MI_IMPORT, MI_LOWCUT, MI_USB, MI_BOOT, MI_BRIGHT, MI_TAPEAUTO, MI_SERIAL, MI_LCLEAR, MI_ABOUT, MI_COUNT };   /* winampFM (2.6: USB SERIAL, MIDI LEARN CLEAR) */
+#if BOARD_SMK37                                 /* the SMK-37: no backlight control, no key LEDs */
+#define WFM_MENU_HIDE (1u << MI_LED | 1u << MI_BRIGHT)
+#define WFM_MENU_FIRST MI_IMPORT
+#else
 #define WFM_MENU_HIDE 0u
+#define WFM_MENU_FIRST MI_LED
+#endif
 static const char *const MI_NAME[MI_COUNT] = {"KEYBOARD LED", "IMPORTER", "LOWCUT", "USB AUDIO", "BOOT SOUND", "BRIGHTNESS", "TAPES AUTOPLAY", "USB SERIAL", "MIDI LEARN CLEAR", "ABOUT"};
 /* SOUNDS: PRESETS browses every sound of the selected hero (the synth bank, the drum kits), OCT+ plays / pauses it with a short phrase, the other
  * tracks are soloed out while it plays; SEL keeps it on the hero's track, leaving puts back the sound, the solo and the transport */
