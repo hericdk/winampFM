@@ -1997,7 +1997,7 @@ static void wfm_splash(void)
         wf_textc(120, 160, 1, "SYNTH FOR THE FM-1", WC_LAB);
         wf_inset(14, 186, 212, 13, WC_LCD);
         wf_textc(120, 189, 1, "*** LOADING ***", WC_GRN);
-        wf_textc(120, 210, 0, "WINAMPFM 0.1  BASED ON SLOOP 2.6  GPL-3.0", WC_LOFF);
+        wf_textc(120, 210, 0, "WINAMPFM 0.11  BASED ON SLOOP 2.6  GPL-3.0", WC_LOFF);
         cv_ox = 0, cv_oy = 0;
         cv_blit(0, (uint32_t)y0);
     }
