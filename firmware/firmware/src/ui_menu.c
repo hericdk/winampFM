@@ -284,7 +284,7 @@ static UI_NOINLINE void menu_input(uint32_t pressed)
         wfm_show(1);
         return;
     }
-    if (ui.menu == 9) {                                /* SOUND SELECT (hold PLAY): PRESETS roll the tapes and, when the knob rests, the sound plays alone; SEL keeps it; ALGORITHM picks the hero */
+    if (ui.menu == 9) {                                /* SOUND SELECT (hold PLAY): PRESETS roll the tapes and, when the knob rests, the sound plays alone; SEL keeps it (only SEL copies); ALGORITHM picks the hero */
         int32_t d = panel_enc(EN_PRESET) + panel_enc(EN_SELECT), a = panel_enc(EN_ALGO);
         uint32_t sel = (pressed >> panel.btn[B_SCL]) & 1u, pl = (pressed >> panel.btn[B_PLAY]) & 1u;
         if (pl) {                                      /* PLAY: hear it again */
@@ -310,13 +310,6 @@ static UI_NOINLINE void menu_input(uint32_t pressed)
             sx_pend = 0;
             sx_start();
             ui.force = 1;
-        }
-        {                                              /* (winampFM, unsaid: PLAY held 0.8 s copies too) */
-            static uint32_t pl_t0;
-            uint32_t held = (fm1_in.buttons >> panel.btn[B_PLAY]) & 1u;
-            if (pl) pl_t0 = fm1_ms | 1u;
-            if (!held) pl_t0 = 0;
-            else if (pl_t0 && fm1_ms - pl_t0 >= 800u) pl_t0 = 0, sel = 1;
         }
         if (sel) {                                     /* copy: this is the track's sound now, clean: the hero's effects, chord and arpeggio off, as the preview played */
             if (!is_drum(TSEL)) {                      /* the sound's own parameters again, nothing of what was set before: the preset applied whole, the effects of the hero, chord, arpeggio, pan */
