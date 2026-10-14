@@ -124,7 +124,7 @@
   <section class="inst" id="install">
     <div class="ihead">
       <button id="go" disabled data-t="install"></button>
-      <span class="ver"><b>winampFM v0.1</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
+      <span class="ver"><b>winampFM v0.11</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
       <div class="imeta"><p class="small" data-t="intro"></p><p class="small" data-t="warn"></p></div>
     </div>
     <div class="prog"><progress id="bar" max="100" value="0"></progress><span id="pct">0%</span></div>
@@ -692,7 +692,7 @@ const sayK = (k, arg = "") => { lastKey = k; lastArg = arg; $("status").textCont
 const say = (txt) => { lastKey = null; $("status").textContent = txt; };
 const log = (t) => { $("log").textContent += t + "\n"; };
 let image = null;
-const meta = {"version": "0.1", "product": "FM-1_900", "pkg": "release/winampfm-0.1.fwsc", "sha256": "f2c77b18ccbe839fcb8e4e2c539e47d0cee94ee3e16d00c5a6484b8bb7824cb4"};
+const meta = {"version": "0.11", "product": "FM-1_900", "pkg": "release/winampfm-0.11.fwsc", "sha256": "4713d17b252353abadfb23a440e0fb4d6b3fe158498d5bafc100894241c2bda3"};
 
 let writing = false, stock = null;
 const lockAll = (on) => {

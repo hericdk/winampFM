@@ -19,12 +19,8 @@ void fm1_timer5_irq(void)
     uint32_t t0 = fm1_ticks(), usb_due = sub % 5u == 0u;
     fm1_timer5_ack();
     felucca_dbg.timer_irqs++;
-    {   /* winampFM: the screen's brightness, a 1 kHz pulse of the backlight (bl_lv tenths on) */
-        static uint8_t ph, on = 1;
-        uint8_t want = ph < bl_lv;
-        if (++ph >= 10u) ph = 0;
-        if (want != on) on = want, fm1_lcd_bl(want);
-    }
+    /* (winampFM 0.1 pulsed the backlight here for the screen's brightness: switching it next to the matrix scan put noise on the
+     * encoder rows, and below 100 % no knob ever settled on a detent. The backlight stays on, as in SLOOP and FM1 Quest) */
     fm1_input_tick();
     {   /* milliseconds from the 24 MHz TIMER4 (robust to a late tick) */
         static uint32_t last, acc;

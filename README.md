@@ -1,9 +1,9 @@
 # winampFM Synth
 
-**A Winamp 2.x-style firmware for the M-VAVE FM-1.** Your sounds become a playlist, four tracks record as loops, effects sit on sliders and a visualizer is made only of lines. Launch version **v0.1**, based on **SLOOP 2.6**.
+**A Winamp 2.x-style firmware for the M-VAVE FM-1.** Your sounds become a playlist, four tracks record as loops, effects sit on sliders and a visualizer is made only of lines. Current version **v0.11**, based on **SLOOP 2.6**.
 
 - **Site, installer and 3D simulator (the real firmware in your browser, with sound):** https://hericdk.github.io/winampFM/
-- **Install on your FM-1:** open the site in Chrome or Edge, connect the FM-1 by USB and press install. The package is also in [`release/winampfm-0.1.fwsc`](release/).
+- **Install on your FM-1:** open the site in Chrome or Edge, connect the FM-1 by USB and press install. The package is also in [`release/winampfm-0.11.fwsc`](release/).
 - **License:** GPL-3.0-only, like SLOOP, Felucca and FM1 Quest.
 
 ## What is unique to winampFM
@@ -21,11 +21,16 @@ These were made for winampFM, on top of everything SLOOP already does:
 | **Visualizer** | Pixel art made of lines, driven by the sound: SCOPE, BARS, MILK, RAYS, TUNNEL. SELECT changes it. |
 | **Punch-in carousel** | Hold FX and the black keys show the 27 performance effects as a moving carousel over a keyboard, with REV/ECHO THROW on the octave keys. |
 | **Brazilian sounds** | CAVAQUINHO, BERIMBAU, AGOGO BELL, SANFONA and BRASIL drum kits, next to all 153 SLOOP 2.6 sounds (157 in total). |
-| **Easier navigation** | SELECT cycles the page tabs with wrap-around; FILT/MIX in one FX tab; screen brightness, LED colours and boot mute in the menu. |
+| **Easier navigation** | SELECT cycles the page tabs with wrap-around; FILT/MIX in one FX tab; LED colours and boot mute in the menu. |
 | **3D simulator** | The real firmware compiled to WebAssembly, in a 3D model of the FM-1, with a tutorial bar that plays demos by itself. |
 | **Screen recorder widget** | A small Win98-style window on the site records the simulator screen and sound, to save, share or lay over your own videos. |
 
 Merged from SLOOP 2.4, 2.5 and 2.6 (features the community asked for): FM6 engine, PHYS and NOISE engines with 77 new sounds, INSERT per track, LFO 2, ENV SYNC, filter TYPE, step LEN/VEL, drum mute, TEXTURE, MIDI (channels, Program Change, LEARN, clock), the 27 performance effects and REV/ECHO THROW.
+
+## Changes
+
+- **v0.11:** fixes the knobs not responding on the device. The screen-brightness option pulsed the backlight next to the knob scan, and below 100 % the knobs never registered a click. The backlight now stays on (as in SLOOP and FM1 Quest) and the BRIGHTNESS menu item is gone. If your knobs stopped working on v0.1, install v0.11.
+- **v0.1:** launch version.
 
 ## Use it in your own work
 
@@ -40,7 +45,7 @@ The code is GPL-3.0-only, so any firmware you distribute that is based on it mus
 | Folder | Content |
 |---|---|
 | `index.html`, `assets/`, `media/`, `sim/` | The site: installer, 3D simulator (`sim/`) and the feature clips. |
-| `release/` | The firmware package `winampfm-0.1.fwsc`. |
+| `release/` | The firmware package `winampfm-0.11.fwsc`. |
 | `firmware/` | The complete source of that firmware (C, JieLi AC79), as the GPL requires. `sh firmware/build.sh` builds the package (see `firmware/BUILDING.md`). |
 
 **Rescue:** hold OCT− alone while switching the FM-1 on to enter the USB rescue mode and reinstall any firmware. Installing custom firmware is at your own risk.
