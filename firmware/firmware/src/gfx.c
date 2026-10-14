@@ -142,8 +142,10 @@ static void cv_blit_from(uint32_t x, uint32_t y, uint32_t r0)
     }
 }
 
+static int32_t cv_cx0 = -32768, cv_cy0 = -32768, cv_cx1 = 32767, cv_cy1 = 32767;   /* a clip in screen coordinates (winampFM: a scene in the visualizer window) */
 static inline void cv_pset(int32_t x, int32_t y, uint16_t c)
 {
+    if (x < cv_cx0 || x >= cv_cx1 || y < cv_cy0 || y >= cv_cy1) return;
     y += cv_oy;
     x += cv_ox;
     if ((uint32_t)x < cv_w && (uint32_t)y < cv_h)
@@ -152,8 +154,14 @@ static inline void cv_pset(int32_t x, int32_t y, uint16_t c)
 
 static void cv_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c)
 {
-    int32_t x1 = x + w + cv_ox, y1 = y + h + cv_oy, i;
+    int32_t x1, y1, i;
     uint16_t sc = swap16(c);
+    if (x < cv_cx0) w -= cv_cx0 - x, x = cv_cx0;
+    if (y < cv_cy0) h -= cv_cy0 - y, y = cv_cy0;
+    if (x + w > cv_cx1) w = cv_cx1 - x;
+    if (y + h > cv_cy1) h = cv_cy1 - y;
+    if (w <= 0 || h <= 0) return;
+    x1 = x + w + cv_ox, y1 = y + h + cv_oy;
     y += cv_oy;                             /* clipped once, then filled row by row */
     x += cv_ox;
     if (x < 0)

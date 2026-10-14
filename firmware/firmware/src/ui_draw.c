@@ -163,6 +163,7 @@ static UI_NOINLINE void ui_timers(void)
         ui.hot_t--;
 }
 
+static int wfm_vis_open(void);
 static UI_NOINLINE void ui_draw(void)
 {
     ui.frame++;
@@ -173,7 +174,7 @@ static UI_NOINLINE void ui_draw(void)
         uint32_t key = ui.menu ? 2000u + ui.menu : (!ui.home && cur_page()->scope == SC_TRK) ? 1000u + wfm_view_key() : 3000u + ui.page;
         if (ui.layer == LY_PLAY && !ui.hold_kind && key != last_key) {
             uint32_t is_menu = key >= 2000u && key < 3000u, was_menu = last_key >= 2000u && last_key < 3000u;
-            if (key == 2009u || last_key == 2009u) tr_start(4, 560);              /* TAPES, in and out: the tape */
+            if (key == 2009u || last_key == 2009u) tr_start(4, 560);         /* TAPES, in and out: the tape */
             else if (last_key == 0xFFFFFFFFu || is_menu || was_menu) tr_start(3, 420);          /* power-on and everything of the menu: the halftone fills in */
             else tr_start(4, 480);                                                       /* a window, a page, a home: the VHS tape */
             last_key = key;
@@ -206,7 +207,8 @@ static UI_NOINLINE void ui_draw(void)
         if (!ui.msg_t)
             ui_message("ERASED");
     }
-    if (!ui.menu && (ui.layer != LY_PLAY || ui.hold_kind)) {   /* a layer held / a hold to confirm */
+    if (!ui.menu && (ui.layer != LY_PLAY || ui.hold_kind) && !(ui.layer == LY_FX && !ui.hold_kind && wfm_vis_open())) {   /* a layer held / a hold to confirm
+                                                         * (winampFM: FX held over the visualizer keeps the picture: the effects show in it) */
         if (ui.hold_kind) {
             layer_shown = 1;
             wfm_hold_draw();                           /* winampFM (was the Quest's ring) */

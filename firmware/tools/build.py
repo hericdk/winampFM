@@ -99,7 +99,8 @@ def generate():
             [tools / "gen_logo.py", GEN / "sloop_logo.h"],
             [tools / "gen_quest_font.py", GEN / "felucca_qfont.h"],          # the Pixelify Sans fonts (from FM1 Quest)
             [tools / "gen_fm6_patches.py", GEN / "felucca_fm6.h"],                 # SLOOP 2.4: the FM6 factory patches
-            [tools / "gen_wfm_font.py", GEN / "wfm_font.h"]]                    # winampFM
+            [tools / "gen_wfm_font.py", GEN / "wfm_font.h"],                    # winampFM
+            [tools / "gen_vidpix.py", GEN / "wfm_vidpix.h"]]                    # winampFM: videos as pixel art (local tests)
     procs = [subprocess.Popen([sys.executable, *map(str, c)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               text=True) for c in cmds]
     failed = []

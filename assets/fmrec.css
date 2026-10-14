@@ -1,5 +1,5 @@
 /* winampFM floating recorder (from FM1.quest): a Windows 98 window around the simulator's little screen. Move it by the title bar or anywhere on its body. */
-#fmrec{--v:112px;--w:calc(var(--v) + 56px);--vy:30px;--ink:#1e1418;--ed:0px;
+#fmrec{--v:160px;--w:max(calc(var(--v) + 16px), 152px);--vy:30px;--ink:#1e1418;--ed:0px;
   --arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='20' shape-rendering='crispEdges'%3E%3Cpath d='M1 1V16L5 12L7.5 18.5L10 17.5L7.5 11H12Z' fill='white' stroke='black'/%3E%3C/svg%3E") 1 1;
   --wait:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='24' shape-rendering='crispEdges'%3E%3Cpath d='M4 1H16V4L11 12L16 20V23H4V20L9 12L4 4Z' fill='white' stroke='black' stroke-width='2'/%3E%3Cpath d='M7 5H13L10 10Z M10 15L14 21H6Z' fill='black'/%3E%3C/svg%3E") 10 12;
   position:fixed;left:0;top:0;z-index:90;width:var(--w);font:400 12px/1.2 "Pixelify Sans",ui-monospace,monospace;color:#000;user-select:none;-webkit-user-select:none;cursor:var(--arrow),default}
@@ -15,7 +15,7 @@
 #fmrec .fr-view{position:absolute;left:calc((var(--w) - var(--v)) / 2);top:var(--vy);width:var(--v);height:var(--v);image-rendering:pixelated;background:#000;z-index:4;outline:2px solid;outline-color:#808080 #fff #fff #808080}
 #fmrec.review .fr-view{cursor:var(--arrow),pointer}
 #fmrec .fr-ctl{position:absolute;left:8px;right:8px;top:calc(var(--vy) + var(--v) + 10px + var(--ed));height:28px;display:flex;align-items:center;gap:8px;z-index:8}
-#fmrec .fr-rec{width:26px;height:26px;border:2px solid #000;background:#d0463c;display:grid;place-items:center;padding:0;flex:none;box-shadow:inset 2px 2px #ff8a80,inset -2px -2px #7a1a14}
+#fmrec .fr-rec{width:28px;height:28px;border-radius:50%;border:2px solid #000;background:#d0463c;display:grid;place-items:center;padding:0;flex:none;box-shadow:inset 2px 2px #ff8a80,inset -2px -2px #7a1a14}
 #fmrec .fr-rec:active{box-shadow:inset 2px 2px #7a1a14}
 #fmrec .fr-rec i{display:block;width:9px;height:9px;background:#fff;border-radius:50%}
 #fmrec.rec .fr-rec{background:#8e1f1a}

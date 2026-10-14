@@ -236,7 +236,7 @@
   /* ---------- size, position and dragging (the window can be moved anywhere; the spot is remembered in this browser) ---------- */
   const POSK = 'fmrec.pos';
   let px = null, py = null;
-  const fit = () => { const v = Math.max(80, Math.min(112, Math.floor((innerHeight - 16) / 3.2))); root.style.setProperty('--v', (innerWidth < 760 ? Math.min(v, 96) : v) + 'px'); };
+  const fit = () => { const v = Math.max(112, Math.min(160, Math.floor((innerHeight - 260) / 1.8))); root.style.setProperty('--v', (innerWidth < 760 ? Math.min(v, 136) : v) + 'px');   /* the screen fills the window's width (8 px margins, as the controls) */ };
   function place(x, y) {
     const w = root.offsetWidth, h = stage.offsetHeight || root.offsetHeight;
     px = Math.round(Math.max(4, Math.min(innerWidth - w - 4, x))); py = Math.round(Math.max(4, Math.min(innerHeight - h - 4, y)));
@@ -306,7 +306,7 @@
     if (!c) return;
     const X = (s) => Math.round(s / c.dur * W2), a = X(c.tin), b = X(c.tout), f = Math.max(1, X(c.tin + c.fade) - a);
     tctx.fillStyle = '#303040'; tctx.fillRect(0, 3, W2, 8);                          // the whole take
-    tctx.fillStyle = '#000080';                                                       // kept: the fades are its slopes
+    tctx.fillStyle = '#f07818';                                                       // kept, in the bolt's orange: the fades are its slopes
     for (let x = a; x < b; x++) { const k = Math.min(1, (x - a) / f, (b - x) / f), h = Math.max(1, Math.round(12 * k)); tctx.fillRect(x, 13 - h, 1, h); }
     tctx.fillStyle = '#c0c0c0'; tctx.fillRect(a, 0, 1, H2); tctx.fillRect(b - 1, 0, 1, H2);   // the cuts
     tctx.fillStyle = '#fff'; tctx.fillRect(X(c.video.currentTime || 0), 0, 1, H2);           // where it plays
