@@ -98,11 +98,11 @@ static const struct {
     {1, G_FILT, "FLT", "FILT", "DJ FILTER"}, {1, G_DUST, "LOF", "LOFI", "LO-FI DUST"}, {1, G_DUCK, "DCK", "DUCK", "KICK DUCK"}, {1, G_BPM, "BPM", "BPM", "TEMPO"},
 };
 static const char *const WF_GRP[5] = {"SEND", "SPACE", "MASTER", "PARTY", "TRACK"};
-static const char *const WF_VIEW[4] = {"PLAYLIST", "EFFECTS", "VISUALIZER", "TAPES"};
-#define WV_N 5
-static const char *const WF_VMODE[WV_N] = {"SCOPE", "BARS", "MILK", "RAYS", "TUNNEL"};
+static const char *const WF_VIEW[5] = {"PLAYLIST", "EFFECTS", "VISUALIZER", "TAPES", "VISUALIZER"};
+#define WV_N 7
+static const char *const WF_VMODE[WV_N] = {"SCOPE", "BARS", "MILK", "RAYS", "SHIP", "RACER", "DRIVE"};
 static uint8_t wf_grp;                       /* the group KNOB 1..4 move */
-static uint8_t wf_view = 1;                  /* the lower window: 0 playlist, 1 effects (the first, as Winamp's EQ), 2 visualizer */
+static uint8_t wf_view = 1;                  /* the lower window: 0 playlist, 1 effects (the first, as Winamp's EQ), 2 visualizer, 3 tapes, 4 WARP (the whole screen) */
 static uint8_t wf_pg;                        /* the lower window: 0 the player's own, 1 a page, 2 a layer, 3 SONG, 4 STEP, 5 a hold, 6 PRESETS, 7 drums, 8 USER */
 static struct {                              /* a layer's keys and knobs (ui_layers.c), or the STEP page's */
     uint32_t layer;
@@ -992,15 +992,23 @@ static UI_NOINLINE void wf_effects(void)
 }
 
 /* ---------------------------------------------------------------- lower window: VISUALIZER (lines only, pixel art) */
-static uint8_t wv_buf[VZ_CH][VZ_CW] __attribute__((section(".pool")));   /* intensity 0..15 of each 2 x 2 cell; it fades: the trails (pool: RAM is tight under SLOOP 2.6) */
+#define WVF_N 80                         /* the whole screen: 80 x 80 cells of 3 x 3 */
+static uint8_t wv_mem[7200] __attribute__((section(".pool")));   /* (the window 115 x 52, the whole screen 80 x 80, a video 120 x 120 at 4 bits) */   /* (pool: RAM is tight under SLOOP 2.6) */
+/* the cells being drawn: the window's 115 x 52 (2 x 2 px) or the whole screen's 80 x 80 (3 x 3); the two share the buffer and each
+ * clears it when it takes it. A cell: bits 0-3 its light (0 off, it fades: the trails), bit 4 the picture's second colour */
+static int32_t wv_w = VZ_CW, wv_h = VZ_CH;
+#define WVC(x, y) wv_mem[(y) * wv_w + (x)]
+static uint8_t wvf_on;                       /* the buffer holds the whole screen's picture */
 static uint32_t wv_ph;                        /* its own clock */
 static const int8_t WV_SIN[64] = {0, 12, 25, 37, 49, 60, 71, 81, 90, 98, 106, 112, 117, 122, 125, 126, 127, 126, 125, 122, 117, 112, 106,
     98, 90, 81, 71, 60, 49, 37, 25, 12, 0, -12, -25, -37, -49, -60, -71, -81, -90, -98, -106, -112, -117, -122, -125, -126, -127, -126,
     -125, -122, -117, -112, -106, -98, -90, -81, -71, -60, -49, -37, -25, -12};
-static UI_NOINLINE void wv_put(int32_t x, int32_t y, uint32_t v) { if ((uint32_t)x < VZ_CW && (uint32_t)y < VZ_CH && wv_buf[y][x] < v) wv_buf[y][x] = (uint8_t)v; }
+static UI_NOINLINE int32_t wv_sin4(uint32_t a) { uint32_t i = (a >> 2) & 63u, f = a & 3u; return (WV_SIN[i] * (int32_t)(4u - f) + WV_SIN[(i + 1u) & 63u] * (int32_t)f) / 4; }   /* a in 1/256 turns */
+static uint8_t wv_force;                     /* 1: a line paints over (a dark needle on a light face), else the brighter cell wins */
+static UI_NOINLINE void wv_put(int32_t x, int32_t y, uint32_t v) { if ((uint32_t)x < (uint32_t)wv_w && (uint32_t)y < (uint32_t)wv_h && (wv_force || (WVC(x, y) & 15u) < (v & 15u))) WVC(x, y) = (uint8_t)v; }
 static UI_NOINLINE void wv_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t v)
 {
-    int32_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y0 - y1 : y1 - y0, sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, e = dx + dy, n = 0;
+    int32_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = -(y1 > y0 ? y1 - y0 : y0 - y1), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, e = dx + dy, n = 0;
     for (;;) {
         wv_put(x0, y0, v);
         int32_t e2 = 2 * e;
@@ -1009,93 +1017,170 @@ static UI_NOINLINE void wv_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, 
         if (e2 <= dx) { e += dx; y0 += sy; }
     }
 }
-static UI_NOINLINE void wv_step(void)
+static UI_NOINLINE void wv_fade(uint32_t d) { uint32_t n, N = (uint32_t)(wv_w * wv_h); for (n = 0; n < N; n++) { uint32_t v = wv_mem[n]; wv_mem[n] = (uint8_t)((v & 15u) > d ? v - d : 0u); } }
+static UI_NOINLINE int32_t wv_bass(void) { return (wf_spec[0] + wf_spec[1] + wf_spec[2] + wf_spec[3]) / 4; }
+static UI_NOINLINE int32_t wv_all(void) { int32_t i, a = 0; for (i = 0; i < 19; i++) a += wf_spec[i]; return a; }
+/* the window's five pictures, drawn on the cells in use (the window's wide strip or the whole screen: the shapes scale with it) */
+/* SHIP (the window's 5th picture, and the whole screen's): a little ship of our own (13 x 13, nose up) flies through streaks of light;
+ * the streaks run faster with the sound, the ship sways with the melody and its engines flare with the bass. In the wide window it flies
+ * to the right. The streaks are cells; the ship is drawn over them (wv_ship_draw) */
+static const char *const WSHIP[13] = {"......1......", ".....111.....", ".....141.....", ".....141.....", ".....111.....", "....11311....",
+                                      "2...13331...2", "2..1113111..2", "2111113111112", "2311111111132", "2..22.1.22..2", "...22...22...",
+                                      "...55...55..."};
+static const uint16_t WSHIP_C[6] = {0, RGB(0xd8, 0xdc, 0xe8), RGB(0x5a, 0x60, 0x74), RGB(0xf0, 0x78, 0x18), RGB(0x40, 0xd0, 0xf0), RGB(0xff, 0x60, 0xc0)};
+static uint8_t wsh_s[24][3];                 /* the streaks: along, across, length */
+static int32_t ws_x, ws_y, ws_fl;            /* the ship (cells) and its flame */
+static UI_NOINLINE uint32_t wvf_rnd(void);
+static UI_NOINLINE void wv_ship_step(int32_t W, int32_t H)
 {
-    int32_t x, y, i;
-    uint32_t dm = wv_mode;                                             /* the picture drawn: OLDSCHOOL takes them in turn by itself */
-    uint32_t w = scope_w, bass = (uint32_t)(wf_spec[0] + wf_spec[1] + wf_spec[2] + wf_spec[3]) / 4u, all = 0;
-    for (i = 0; i < 19; i++) all += wf_spec[i];
-    if (wv_mode == 2u) { static const uint8_t SEQ[5] = {2, 4, 3, 2, 1}; dm = SEQ[(wv_ph / 200u) % 5u]; }   /* MILK: the old-school one, every scene in turn by itself */
-    if (wv_mode == 2u) {                                               /* MILK: the picture flies out of the middle (MilkDrop / Geiss feedback): */
+    int32_t i, all = wv_all(), hi = 0, lo = 0, wide = W > H, L = wide ? W : H, X = wide ? H : W, sp = 1 + all / 40;
+    wv_fade(5);
+    for (i = 0; i < 9; i++) lo += wf_spec[i];
+    for (i = 10; i < 19; i++) hi += wf_spec[i];
+    for (i = 0; i < 24; i++) {
+        uint8_t *q = wsh_s[i];
+        if (!q[2]) { q[0] = (uint8_t)(wvf_rnd() % (uint32_t)L), q[1] = (uint8_t)(wvf_rnd() % (uint32_t)X), q[2] = (uint8_t)(2u + wvf_rnd() % 9u); }
+        q[0] = (uint8_t)(q[0] + (uint32_t)(sp * q[2] / 4 + 1));
+        if (q[0] >= (uint32_t)L + q[2]) { q[0] = 0, q[1] = (uint8_t)(wvf_rnd() % (uint32_t)X), q[2] = (uint8_t)(2u + wvf_rnd() % 9u); }
+        if (wide) wv_line(W - (int32_t)q[0], q[1], W - (int32_t)q[0] + q[2], q[1], 4u + q[2]);
+        else wv_line(q[1], (int32_t)q[0] - q[2], q[1], q[0], 4u + q[2]);
+    }
+    i = WV_SIN[(wv_ph * 2u) & 63u] * 3 / 127 + clamp((hi - lo) / 12, -8, 8);   /* the sway */
+    if (wide) ws_x = W / 4 + WV_SIN[(wv_ph + 16u) & 63u] * 2 / 127, ws_y = H / 2 + i;
+    else ws_x = W / 2 + i, ws_y = H * 2 / 3 + WV_SIN[(wv_ph + 16u) & 63u] * 2 / 127;
+    ws_fl = 2 + wv_bass() / 4 + (int32_t)(wv_ph & 1u);
+}
+static UI_NOINLINE void wv_ship_draw(int32_t cx, int32_t cy, int32_t z, int wide)   /* the ship at pixel cx, cy, z px a dot; wide: nose right */
+{
+    int32_t r, c, k;
+    for (r = 0; r < 13; r++)
+        for (c = 0; c < 13; c++) {
+            uint32_t v = (uint32_t)(WSHIP[r][c] - '0');
+            if (WSHIP[r][c] == '.') continue;
+            if (wide) WFR(cx + (6 - r) * z, cy + (c - 6) * z, z, z, WSHIP_C[v]);
+            else WFR(cx + (c - 6) * z, cy + (r - 6) * z, z, z, WSHIP_C[v]);
+        }
+    for (k = 0; k < ws_fl; k++) {                                      /* the flames: pink, white at the nozzle */
+        uint16_t col = k < 1 ? WC_WHT : k < 3 ? RGB(0xff, 0x60, 0xc0) : RGB(0x90, 0x20, 0x70);
+        int32_t d = 7 + k, w = k > ws_fl - 2 ? 1 : 2;
+        if (wide) { WFR(cx - d * z, cy - 3 * z, z, w * z / 2 + 1, col), WFR(cx - d * z, cy + 2 * z, z, w * z / 2 + 1, col); }
+        else { WFR(cx - 3 * z, cy + d * z, w * z / 2 + 1, z, col), WFR(cx + 2 * z, cy + d * z, w * z / 2 + 1, z, col); }
+    }
+}
+static UI_NOINLINE void wv_draw(uint32_t mode)
+{
+    int32_t x, y, i, W = wv_w, H = wv_h, cx = W / 2, cy = H / 2, ax = W >= 2 * H ? 2 : 1;   /* (ax: the window is wide, the shapes twice as wide) */
+    uint32_t dm = mode, w = scope_w;
+    int32_t bass = wv_bass(), all = wv_all();
+    if (mode == 2u) { static const uint8_t SEQ[5] = {2, 4, 3, 2, 1}; dm = SEQ[(wv_ph / 200u) % 5u]; }   /* MILK: the old-school one, every scene in turn by itself */
+    if (mode == 2u) {                                                  /* MILK: the picture flies out of the middle (MilkDrop / Geiss feedback): */
         int32_t q;                                                     /* each cell takes the one nearer the centre, in place, outer cells first */
         for (q = 0; q < 4; q++) {
-            int32_t sx = q & 1 ? 1 : -1, sy = q & 2 ? 1 : -1, cx = VZ_CW / 2, cy = VZ_CH / 2, dy, dx;
-            for (dy = VZ_CH / 2; dy >= 0; dy--)
-                for (dx = VZ_CW / 2; dx >= 0; dx--) {
+            int32_t sx = q & 1 ? 1 : -1, sy = q & 2 ? 1 : -1, dy, dx;
+            for (dy = cy; dy >= 0; dy--)
+                for (dx = cx; dx >= 0; dx--) {
                     int32_t tx = cx + sx * dx, ty = cy + sy * dy, fx = cx + sx * (dx * 7 / 8), fy = cy + sy * (dy * 7 / 8);
                     uint32_t v;
-                    if ((uint32_t)tx >= VZ_CW || (uint32_t)ty >= VZ_CH) continue;
-                    v = wv_buf[fy][fx];
-                    wv_buf[ty][tx] = (uint8_t)(v > 1u ? v - 1u : 0u);
+                    if ((uint32_t)tx >= (uint32_t)W || (uint32_t)ty >= (uint32_t)H) continue;
+                    v = WVC(fx, fy) & 15u;
+                    WVC(tx, ty) = (uint8_t)(v > 1u ? v - 1u : 0u);
                 }
         }
     } else
-        for (y = 0; y < VZ_CH; y++)                                    /* the fade */
-            for (x = 0; x < VZ_CW; x++) {
-                uint32_t v = wv_buf[y][x];
-                wv_buf[y][x] = (uint8_t)(v > 3u ? v - 3u : 0u);
-            }
+        wv_fade(3);
     wv_ph++;
     if (dm == 0u) {                                                /* SCOPE: the output as a line, Winamp's oscilloscope */
-        int32_t py = VZ_CH / 2;
-        for (x = 0; x < VZ_CW; x++) {
-            int32_t s = scope_buf[(w - 2u * VZ_CW + 2u * (uint32_t)x) & (SCOPE_N - 1u)];
-            y = clamp(VZ_CH / 2 - s * (VZ_CH / 2) / 12000, 0, VZ_CH - 1);
+        int32_t py = cy;
+        for (x = 0; x < W; x++) {
+            int32_t s = scope_buf[(w - 2u * (uint32_t)W + 2u * (uint32_t)x) & (SCOPE_N - 1u)];
+            y = clamp(cy - s * cy / 12000, 0, H - 1);
             if (x) wv_line(x - 1, py, x, y, 15);
             py = y;
         }
     } else if (dm == 1u) {                                         /* BARS: the spectrum mirrored round the middle line */
         for (i = 0; i < 19; i++) {
-            int32_t cx = 3 + i * 6, h = wf_spec[i] * (VZ_CH / 2 - 1) / 24;
-            wv_line(cx, VZ_CH / 2 - h, cx, VZ_CH / 2 + h, 15);
-            wv_line(cx + 1, VZ_CH / 2 - h, cx + 1, VZ_CH / 2 + h, 11);
-            wv_put(cx, VZ_CH / 2 - 1 - wf_peak[i] * (VZ_CH / 2 - 1) / 24, 15);
+            int32_t bx = 3 + i * (W - 8) / 18, h = wf_spec[i] * (cy - 1) / 24;
+            wv_line(bx, cy - h, bx, cy + h, 15);
+            wv_line(bx + 1, cy - h, bx + 1, cy + h, 11);
+            if (W > 100) wv_put(bx, cy - 1 - wf_peak[i] * (cy - 1) / 24, 15);
+            else wv_line(bx + 2, cy - h, bx + 2, cy + h, 7);
         }
     } else if (dm == 2u) {                                         /* MILK: the feedback flies it out; the scene changes by itself every ~8 s, */
         uint32_t sc = (wv_ph / 160u) % 3u;                             /* as MilkDrop's presets do: the wave, rings, a turning beam */
-        int32_t py = VZ_CH / 2, a, px = 0;
+        int32_t py = cy, a, px = 0;
         if (sc == 0u) {
-            for (x = 16; x < VZ_CW - 16; x++) {
-                int32_t sm = scope_buf[(w - 2u * VZ_CW + 2u * (uint32_t)x) & (SCOPE_N - 1u)];
-                y = clamp(VZ_CH / 2 - sm * 10 / 12000, 0, VZ_CH - 1);
-                if (x > 16) wv_line(x - 1, py, x, y, 15);
+            for (x = W / 7; x < W - W / 7; x++) {
+                int32_t sm = scope_buf[(w - 2u * (uint32_t)W + 2u * (uint32_t)x) & (SCOPE_N - 1u)];
+                y = clamp(cy - sm * H / 62400, 0, H - 1);
+                if (x > W / 7) wv_line(x - 1, py, x, y, 15);
                 py = y;
             }
         } else if (sc == 1u) {                                         /* a ring each beat of the bass: they spread as rings in water */
-            int32_t r = 3 + (int32_t)bass / 4;
+            int32_t r = (3 + bass / 4) * H / 52;
             for (a = 0; a <= 32; a++) {
-                int32_t ax = VZ_CW / 2 + r * 2 * WV_SIN[((uint32_t)a * 2u + 16u) & 63u] / 127, ay = VZ_CH / 2 + r * WV_SIN[((uint32_t)a * 2u) & 63u] / 127;
-                if (a) wv_line(px, py, ax, ay, bass > 6u ? 15u : 9u);
-                px = ax, py = ay;
+                int32_t qx = cx + r * ax * WV_SIN[((uint32_t)a * 2u + 16u) & 63u] / 127, qy = cy + r * WV_SIN[((uint32_t)a * 2u) & 63u] / 127;
+                if (a) wv_line(px, py, qx, qy, bass > 6 ? 15u : 9u);
+                px = qx, py = qy;
             }
         } else {                                                       /* a beam turning round the middle, wider with the sound */
             uint32_t an = wv_ph * 2u;
-            for (a = -1 - (int32_t)all / 80; a <= 1 + (int32_t)all / 80; a++) {
+            for (a = -1 - all / 80; a <= 1 + all / 80; a++) {
                 uint32_t q = (an + (uint32_t)(a + 64)) & 63u;
-                wv_line(VZ_CW / 2, VZ_CH / 2, VZ_CW / 2 + 60 * WV_SIN[(q + 16u) & 63u] / 127, VZ_CH / 2 + 30 * WV_SIN[q] / 127, 15);
-                wv_line(VZ_CW / 2, VZ_CH / 2, VZ_CW / 2 - 60 * WV_SIN[(q + 16u) & 63u] / 127, VZ_CH / 2 - 30 * WV_SIN[q] / 127, 11);
+                wv_line(cx, cy, cx + (cx + 2) * WV_SIN[(q + 16u) & 63u] / 127, cy + (cy + 4) * WV_SIN[q] / 127, 15);
+                wv_line(cx, cy, cx - (cx + 2) * WV_SIN[(q + 16u) & 63u] / 127, cy - (cy + 4) * WV_SIN[q] / 127, 11);
             }
         }
     } else if (dm == 3u) {                                         /* RAYS: one line per band from the middle, turning */
         for (i = 0; i < 19; i++) {
             uint32_t a = (wv_ph / 2u + (uint32_t)i * 64u / 19u) & 63u;
-            int32_t l = 4 + wf_spec[i] * 2 + (int32_t)all / 40;
-            wv_line(VZ_CW / 2, VZ_CH / 2, VZ_CW / 2 + l * WV_SIN[(a + 16u) & 63u] / 127, VZ_CH / 2 + l * WV_SIN[a] / 254, 15);
+            int32_t l = (4 + wf_spec[i] * 2 + all / 40) * H / 52;
+            wv_line(cx, cy, cx + l * WV_SIN[(a + 16u) & 63u] / 127, cy + l * WV_SIN[a] / (127 * ax), 15);
         }
-    } else {                                                           /* TUNNEL: frames rushing out of the middle, as the old video players and screen savers */
-        static uint32_t tz;
-        int32_t k2;
-        tz += 2u + all / 30u;                                          /* faster with more sound */
-        for (k2 = 0; k2 < 6; k2++) {
-            int32_t z = (int32_t)((tz + (uint32_t)k2 * 43u) % 256u), r = z * z / 1100 + 1, hw = r * 2, hh = r;
-            int32_t ox = WV_SIN[(wv_ph + (uint32_t)k2 * 9u + 16u) & 63u] * (8 - z / 40) / 127, oy = WV_SIN[(wv_ph * 2u + (uint32_t)k2 * 9u) & 63u] * (4 - z / 80) / 127;
-            int32_t cx = VZ_CW / 2 + ox, cy = VZ_CH / 2 + oy, v = 4 + z / 24;
-            hh += (int32_t)bass * z / 600;
-            wv_line(cx - hw, cy - hh, cx + hw, cy - hh, (uint32_t)v), wv_line(cx + hw, cy - hh, cx + hw, cy + hh, (uint32_t)v);
-            wv_line(cx + hw, cy + hh, cx - hw, cy + hh, (uint32_t)v), wv_line(cx - hw, cy + hh, cx - hw, cy - hh, (uint32_t)v);
-        }
-    }
+    } else wv_ship_step(W, H);                                         /* SHIP: a little ship flying through streaks (it was the TUNNEL) */
 }
+static UI_NOINLINE void nk_step(void);
+static UI_NOINLINE void nc_spec(void);
+static UI_NOINLINE void wvf_hits(void);
+static UI_NOINLINE void sh_step(void);
+static UI_NOINLINE void rd_step(void);
+static UI_NOINLINE void sh_draw(int32_t rx, int32_t ry, int32_t rw, int32_t rh, int32_t z, int big);
+static UI_NOINLINE void v2_racer(void);
+static UI_NOINLINE void v2_drive(void);
+static UI_NOINLINE void wv_step(void)                               /* the window's picture, 20 fps */
+{
+    wv_w = VZ_CW, wv_h = VZ_CH;
+    if (wvf_on) { wvf_on = 0; memset(wv_mem, 0, sizeof wv_mem); }      /* (back from the whole screen: its cells are not ours) */
+    if (wv_mode >= 4u) {                                               /* the scenes (SHIP, RACER, DRIVE): the whole screen's, in the window */
+        nk_step(), nc_spec(), wv_ph++, wvf_hits();
+        if (wv_mode == 4u) sh_step(); else rd_step();
+        return;
+    }
+    wv_draw(wv_mode);
+}
+static UI_NOINLINE void wv_scene(void)                              /* draw the scene into the window, clipped to it (RACER, DRIVE: a band of the big picture) */
+{
+    int32_t ox = cv_ox, oy = cv_oy, ry = wf_ry, sy = wv_mode == 5u ? 92 : 90;
+    if (wv_mode == 4u) {
+        cv_cx0 = VZ_X, cv_cy0 = VZ_Y, cv_cx1 = VZ_X + VZ_CW * 2, cv_cy1 = VZ_Y + VZ_CH * 2;
+        sh_draw(VZ_X, VZ_Y, VZ_CW * 2, VZ_CH * 2, 2, 0);
+    } else {
+        cv_oy = oy + VZ_Y - sy, wf_ry = ry - (VZ_Y - sy);              /* (the picture's rows sy .. sy + 104 in the window) */
+        cv_cx0 = VZ_X, cv_cy0 = sy, cv_cx1 = VZ_X + VZ_CW * 2, cv_cy1 = sy + VZ_CH * 2;
+        if (wv_mode == 5u) v2_racer(); else v2_drive();
+    }
+    cv_ox = ox, cv_oy = oy, wf_ry = ry;
+    cv_cx0 = -32768, cv_cy0 = -32768, cv_cx1 = 32767, cv_cy1 = 32767;
+}
+static const uint16_t WVF_PAL[5][4] = {      /* the second colours (bit 4) and the own pictures' first */
+    {RGB(0x18, 0x20, 0x48), RGB(0x40, 0x58, 0xa0), RGB(0x98, 0xb0, 0xf0), RGB(0xf0, 0xf4, 0xff)},   /* WARP stars */
+    {RGB(0x50, 0x20, 0x04), RGB(0xa0, 0x48, 0x0c), RGB(0xf0, 0x78, 0x18), RGB(0xff, 0xc8, 0x70)},   /* the bolt's orange */
+    {RGB(0x50, 0x46, 0x30), RGB(0x98, 0x88, 0x60), RGB(0xe8, 0xd8, 0xa8), RGB(0xff, 0xf8, 0xe0)},   /* VU: cream */
+    {RGB(0x50, 0x08, 0x08), RGB(0xa0, 0x18, 0x10), RGB(0xff, 0x34, 0x22), RGB(0xff, 0xa0, 0x90)},   /* red */
+    {RGB(0x28, 0x08, 0x40), RGB(0x60, 0x10, 0x88), RGB(0xd0, 0x30, 0xc8), RGB(0xff, 0x90, 0xf8)}};  /* SYNTH: magenta */
+static const uint16_t WVF_PLASMA[16] = {
+    RGB(0x10, 0x04, 0x28), RGB(0x24, 0x08, 0x50), RGB(0x40, 0x0c, 0x78), RGB(0x68, 0x10, 0x90), RGB(0x98, 0x14, 0x98), RGB(0xc8, 0x20, 0x88),
+    RGB(0xf0, 0x38, 0x68), RGB(0xff, 0x60, 0x40), RGB(0xff, 0x90, 0x20), RGB(0xff, 0xc0, 0x30), RGB(0xff, 0xe8, 0x80), RGB(0xc0, 0xf0, 0xa0),
+    RGB(0x60, 0xd0, 0xc0), RGB(0x30, 0x90, 0xd0), RGB(0x20, 0x50, 0xb0), RGB(0x18, 0x18, 0x70)};
 static const uint16_t WV_PAL[6][4] = {                /* per picture: dim .. bright */
     {RGB(0x06, 0x30, 0x06), RGB(0x10, 0x78, 0x10), RGB(0x1c, 0xc8, 0x1c), RGB(0xb0, 0xff, 0xa0)},
     {RGB(0x30, 0x24, 0x08), RGB(0x80, 0x68, 0x18), RGB(0xe0, 0xc0, 0x30), RGB(0xff, 0xf0, 0xb0)},
@@ -1103,26 +1188,28 @@ static const uint16_t WV_PAL[6][4] = {                /* per picture: dim .. bri
     {RGB(0x38, 0x10, 0x08), RGB(0x98, 0x30, 0x18), RGB(0xf0, 0x70, 0x20), RGB(0xff, 0xd8, 0x90)},
     {RGB(0x20, 0x08, 0x38), RGB(0x60, 0x18, 0xa0), RGB(0xc0, 0x40, 0xf0), RGB(0xf8, 0xc8, 0xff)},
     {RGB(0x08, 0x28, 0x30), RGB(0x10, 0x80, 0x90), RGB(0x30, 0xe0, 0xd0), RGB(0xd0, 0xff, 0xf8)}};
+static UI_NOINLINE uint32_t wv_pal_of(uint32_t mode) { return mode == 2u ? (wv_ph / 40u) % 6u : mode == 4u ? 5u : mode; }
 static UI_NOINLINE void wf_visual(void)
 {
     int32_t x, y;
     if (wf_vis(VZ_X - 1, VZ_Y - 1, VZ_CW * 2 + 2, VZ_CH * 2 + 2)) {
         wf_inset(VZ_X, VZ_Y, VZ_CW * 2, VZ_CH * 2, WC_LCD);
-        for (y = 0; y < VZ_CH; y++) {
+        if (wv_mode >= 4u) wv_scene();
+        else for (y = 0; y < VZ_CH && !wvf_on; y++) {                 /* (growing into the whole screen: the buffer is the big one's) */
             int32_t sy = VZ_Y + y * 2;
             if (sy + 2 <= wf_ry || sy >= wf_ry + wf_rh) continue;
             for (x = 0; x < VZ_CW; x++) {
-                uint32_t v = wv_buf[y][x];
-                if (v) WFR(VZ_X + x * 2, sy, 2, 2, WV_PAL[wv_mode == 2u ? (wv_ph / 40u) % 6u : wv_mode == 4u ? 5u : wv_mode][(v - 1u) >> 2]);
+                uint32_t v = wv_mem[y * VZ_CW + x] & 15u;
+                if (v) WFR(VZ_X + x * 2, sy, 2, 2, wv_mode == 4u ? WVF_PAL[0][(v - 1u) >> 2] : WV_PAL[wv_pal_of(wv_mode)][(v - 1u) >> 2]);
             }
         }
     }
     if (wf_vis(4, VZ_Y + VZ_CH * 2 + 1, 232, 240 - (VZ_Y + VZ_CH * 2 + 1))) {   /* the foot: the picture's name, its knob */
         int32_t fy = VZ_Y + VZ_CH * 2 + 2;   /* (rows 230..236) */
         int32_t i2, fx = 9;
-        for (i2 = 0; i2 < WV_N; i2++) fx = wf_text(fx, fy, 1, WF_VMODE[i2], i2 == (int32_t)wv_mode ? WC_GRN : WC_LOFF) + 5;
+        for (i2 = 0; i2 < WV_N; i2++) fx = wf_text(fx, fy + 1, 0, WF_VMODE[i2], i2 == (int32_t)wv_mode ? WC_GRN : WC_LOFF) + 6;
         {                                                              /* SELECT changes the picture: "SEL" and a little knob, its pointer on the picture */
-            static const int8_t PT[WV_N][2] = {{-3, 2}, {-3, -2}, {0, -4}, {3, -2}, {3, 2}};   /* 7 o'clock .. 5 o'clock */
+            static const int8_t PT[WV_N][2] = {{-3, 2}, {-4, 0}, {-3, -2}, {0, -4}, {3, -2}, {4, 0}, {3, 2}};   /* 7 o'clock .. 5 o'clock */
             int32_t kx = 228, ky = fy + 3, yy, xx;
             wf_textr(kx - 7, fy, 1, "SEL", WC_LAB);
             for (yy = -4; yy <= 4; yy++) for (xx = -4; xx <= 4; xx++) {
@@ -1130,7 +1217,3401 @@ static UI_NOINLINE void wf_visual(void)
                 if (d2 <= 16) cv_pset(kx + xx, ky + yy, d2 >= 10 ? WC_BSH : WC_BTN);
             }
             for (yy = 0; yy <= 3; yy++) cv_pset(kx + PT[wv_mode % WV_N][0] * yy / 3, ky + PT[wv_mode % WV_N][1] * yy / 3, WC_AMB);
+            (void)xx;
         }
+    }
+}
+
+/* ---------------------------------------------------------------- the visualizer on the whole screen (HOME after the VISUALIZER, before TAPES):
+ * it comes in through the VHS tape, as every window. The window's five pictures (the same choice: SELECT here or there), then its own:
+ * the space ones in a row (the ship, inside it, the jump, the black hole, the crystal planet), then the rest. The names at the foot for
+ * 4 s after a turn of SELECT. Its own pictures leave the window as it was. */
+static uint8_t sp_s[19];                       /* the spectrum, smoothed (the whole screen's pictures) */
+static uint32_t nk_mask, nk_prev, nk_on;          /* the keys sounding (played or by the tracks), the ones that just started */
+static uint32_t nk_hand, nk_hprev, nk_hon;        /* the keys under the fingers only, the ones just pressed */
+static uint16_t dr_hits;                         /* the drum lanes hit this step (lane 3: the clap) */
+static int32_t ev_lvl, ev_rate;                  /* the level, smoothed (0..~300); onsets a second, smoothed (x16) */
+#define GV_N 28
+static const char *const GV_NAME[GV_N] = {"SCOPE", "BARS", "MILK", "RAYS", "SHIP", "RACER", "DRIVE", "SYNTH", "WATERFALL", "CURVES", "FLOW", "TARGET",
+                                          "HOUND", "BOXER", "CHORDS", "ORB", "DANCE", "BLUEPRINT", "PATCH", "TAPE", "NEO", "SMOKE", "DOOMSCROLL", "ROOM",
+                                          "FLOAT", "DUEL", "LOFI STUDY", "RACCOON"};
+enum { GV_SHIP = 4, GV_RACER, GV_DRIVE, GV_SYNTH, GV_WATER, GV_CURVES, GV_FLOW, GV_TARGET, GV_HOUND, GV_BOXER, GV_CHORDS, GV_ORB, GV_DANCE, GV_BLUEPRINT,
+       GV_PATCH, GV_TAPE, GV_NEO, GV_SMOKE, GV_DOOM, GV_ROOM, GV_FLOAT, GV_DUEL, GV_STUDY, GV_RACCOON };
+/* the order: the four first pictures of the window, the cars, the lines, the tape, the cities and the moods, the drawn ones last. Everything
+ * after the SHIP is drawn in pixels; the last three are videos turned into pixels (wfm_vidpix.h, in this order) */
+#define GV_CLIP(m) ((m) >= GV_STUDY ? (int32_t)((m) - GV_STUDY) : -1)
+#define GV_PIX(m) ((m) >= GV_SHIP)
+#define GV_WIN(g) ((g) <= (uint32_t)GV_DRIVE ? (int32_t)(g) : -1)   /* the window's picture this one is (-1 none): the first seven are the window's */
+#define WV_GV(w) ((uint32_t)(w))
+#define GV_HT(m) 0
+static uint8_t gv_mode;                       /* the whole screen's picture: 0..4 the window's, 5.. its own */
+static uint32_t wvf_sel_t;                    /* the names show until 4 s after this */
+#define WVF_STARS 56
+static int16_t wvf_st[WVF_STARS][3];         /* the stars: x, y (-120..120), depth 8..256 */
+static uint32_t wvf_seed = 0x2545F491u;
+static UI_NOINLINE uint32_t wvf_rnd(void) { wvf_seed = wvf_seed * 1664525u + 1013904223u; return wvf_seed >> 9; }
+static UI_NOINLINE void wvf_new(int32_t i, int32_t far)
+{
+    wvf_st[i][0] = (int16_t)((int32_t)(wvf_rnd() % 241u) - 120), wvf_st[i][1] = (int16_t)((int32_t)(wvf_rnd() % 241u) - 120);
+    wvf_st[i][2] = (int16_t)(far ? 256 : 24 + (int32_t)(wvf_rnd() % 232u));
+}
+static UI_NOINLINE void wvf_warp(void)                              /* WARP: stars rush out as streaks; the spectrum a ring of rays, turning */
+{
+    int32_t i, all = wv_all(), sp = 3 + all / 22, c = WVF_N / 2, r0 = 7 + wv_bass() / 3;
+    wv_fade(2);
+    for (i = 0; i < WVF_STARS; i++) {
+        int32_t z0 = wvf_st[i][2], z1 = z0 - sp, x1, y1;
+        if (z1 < 8) { wvf_new(i, 1); continue; }
+        x1 = c + wvf_st[i][0] * 18 / z1, y1 = c + wvf_st[i][1] * 18 / z1;
+        if ((uint32_t)x1 >= WVF_N || (uint32_t)y1 >= WVF_N) { wvf_new(i, 1); continue; }
+        wv_line(c + wvf_st[i][0] * 18 / z0, c + wvf_st[i][1] * 18 / z0, x1, y1, (uint32_t)clamp(15 - z1 / 20, 3, 15));
+        wvf_st[i][2] = (int16_t)z1;
+    }
+    for (i = 0; i < 38; i++) {
+        uint32_t a = (wv_ph / 3u + (uint32_t)i * 64u / 38u) & 63u;
+        int32_t l = r0 + 2 + wf_spec[i % 19] * 2 / 3, ca = WV_SIN[(a + 16u) & 63u], sa = WV_SIN[a];
+        wv_line(c + r0 * ca / 127, c + r0 * sa / 127, c + l * ca / 127, c + l * sa / 127, 16u + (uint32_t)clamp(8 + wf_spec[i % 19] / 3, 8, 15));
+    }
+}
+static UI_NOINLINE void wvf_plasma(void)                            /* PLASMA: the demoscene's, four waves summed; the bass pushes it */
+{
+    static uint32_t t1, t2, t3;
+    int32_t x, y, bass = wv_bass();
+    t1 += 1u + (uint32_t)bass / 5u, t2 += 2u, t3 += 1u + (uint32_t)wv_all() / 70u;
+    for (y = 0; y < WVF_N; y++)
+        for (x = 0; x < WVF_N; x++) {
+            int32_t d = (x > 40 ? x - 40 : 40 - x) + (y > 40 ? y - 40 : 40 - y);
+            int32_t s = WV_SIN[((uint32_t)x * 2u + t1) & 63u] + WV_SIN[((uint32_t)y * 3u + t2) & 63u] + WV_SIN[((uint32_t)(x + y) * 2u + t3) & 63u] +
+                        WV_SIN[((uint32_t)d * 3u - t1 * 2u) & 63u];
+            wv_mem[y * WVF_N + x] = (uint8_t)(((s + 512) * 16 / 1024) & 15);
+        }
+}
+static int32_t wvf_vu_n[2];                  /* VU: the needles, 1/16 of the scale (the ballistics) */
+static UI_NOINLINE void wvf_vu(void)                                /* VU: two analogue meters, LEFT and RIGHT: a cream face, the needle swings, a red peak lamp */
+{
+    int32_t m, t;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    for (m = 0; m < 2; m++) {
+        int32_t py = m ? 74 : 35, px = 40, R = 31, lv = 0, i, x, y, tgt;
+        const int16_t *b = m ? scope_bufr : scope_buf;
+        for (i = 0; i < 256; i++) { int32_t s = b[(scope_w - 256u + (uint32_t)i) & (SCOPE_N - 1u)]; s = s < 0 ? -s : s; if (s > lv) lv = s; }
+        tgt = clamp(lv * 256 / 11000, 0, 256);                         /* (the peak of the last 6 ms; 256 = full) */
+        wvf_vu_n[m] += (tgt - wvf_vu_n[m]) / (tgt > wvf_vu_n[m] ? 2 : 6);   /* quick up, slow down: as a real needle */
+        for (y = py - R; y <= py; y++)                                 /* the face: the quarter turn above the pivot */
+            for (x = px - R; x <= px + R; x++) {
+                int32_t dx = x - px, dy = y - py;
+                if ((dx < 0 ? -dx : dx) <= -dy && dx * dx + dy * dy <= R * R) wv_put(x, y, dx * dx + dy * dy > (R - 9) * (R - 9) ? 14u : 10u);
+            }
+        wv_force = 1;
+        for (t = 0; t <= 8; t++) {                                     /* the scale: ticks, the last three red */
+            uint32_t a0 = 168u + (uint32_t)t * 6u;                        /* 168 .. 216 (1/256 turns) */
+            int32_t ca = wv_sin4(a0 + 64u), sa = wv_sin4(a0);
+            wv_line(px + (R - 7) * ca / 127, py + (R - 7) * sa / 127, px + (R - 2) * ca / 127, py + (R - 2) * sa / 127, t >= 6 ? 16u | 14u : 1u);
+        }
+        {
+            uint32_t a = 168u + (uint32_t)(wvf_vu_n[m] * 48 / 256);    /* the needle: dark, on the face */
+            wv_line(px, py, px + (R - 1) * wv_sin4(a + 64u) / 127, py + (R - 1) * wv_sin4(a) / 127, 1);
+        }
+        wv_line(px - 2, py, px + 2, py, 1), wv_line(px - 1, py - 1, px + 1, py - 1, 1);
+        wv_force = 0;
+        for (i = 0; i < 3; i++) wv_line(72, py - 30 + i, 74, py - 30 + i, tgt > 230 ? 16u | 15u : 16u | 3u);   /* the peak lamp */
+    }
+}
+static UI_NOINLINE void wvf_marquee(void)                           /* MARQUEE: the spectrum behind (the letters: wvf_paint) */
+{
+    int32_t i;
+    wv_fade(2);
+    for (i = 0; i < 19; i++) {
+        int32_t bx = 2 + i * 4, h = wf_spec[i] * 70 / 24;
+        wv_line(bx, 79 - h, bx, 79, 5), wv_line(bx + 1, 79 - h, bx + 1, 79, 5), wv_line(bx + 2, 79 - h, bx + 2, 79, 4);
+        wv_line(bx, 78 - wf_peak[i] * 70 / 24, bx + 2, 78 - wf_peak[i] * 70 / 24, 8);
+    }
+}
+static UI_NOINLINE void wvf_synth(void)                             /* SYNTH: a striped sun on the horizon, pulsing with the bass, a grid floor rushing in */
+{
+    static uint32_t tz;
+    int32_t x, y, i, hy = 46, R = 17 + wv_bass() / 6, sx = 40, sy = 31;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    tz += 2u + (uint32_t)wv_all() / 40u;
+    for (i = 0; i < 14; i++)                                           /* stars: a few, twinkling */
+        wv_put((int32_t)((i * 37u + 11u) % 80u), (int32_t)((i * 13u + 3u) % 24u), ((wv_ph / 3u + (uint32_t)i * 5u) % 9u) < 2u ? 13u : 4u);
+    for (y = sy - R; y < hy; y++) {                                    /* the sun: rows of the disc, stripes cut out of its lower half */
+        int32_t dy = y - sy, hw = 0, gap = dy > 0 ? dy * 4 / R : 0;
+        while ((hw + 1) * (hw + 1) + dy * dy <= R * R) hw++;
+        if (dy > 0 && ((uint32_t)y + wv_ph / 2u) % 5u < (uint32_t)gap) continue;
+        if (!hw) continue;
+        wv_line(sx - hw, y, sx + hw, y, 16u | (uint32_t)clamp(15 - (y - (sy - R)) * 12 / (2 * R), 3, 15));
+    }
+    wv_line(0, hy, 79, hy, 15);                                        /* the horizon */
+    for (i = 0; i < 8; i++) {                                          /* the floor: lines rushing in, nearer = further apart */
+        int32_t z = (int32_t)(((uint32_t)i * 32u + tz) % 256u);
+        wv_line(0, hy + 1 + z * z / 1700, 79, hy + 1 + z * z / 1700, (uint32_t)(5 + z / 30));
+    }
+    for (i = -9; i <= 9; i++) wv_line(40 + i * 2, hy + 1, 40 + i * 16, 79, 8);   /* and the lines to the vanishing point */
+    for (x = 0; x < 80; x++) {                                         /* mountains: a dark ridge on the horizon */
+        int32_t h = 3 + (WV_SIN[((uint32_t)x * 5u) & 63u] + WV_SIN[((uint32_t)x * 13u + 7u) & 63u]) / 60;
+        if (x < sx - R - 2 || x > sx + R + 2) wv_line(x, hy - h, x, hy - 1, 6);
+    }
+}
+static int32_t wvf_lastb, wvf_hit_n;          /* a hit of the bass (the lasers, the lightning, a shooting star): frames left */
+static UI_NOINLINE void wvf_hits(void) { int32_t b = wv_bass(); if (b > wvf_lastb + 4 && b > 8) wvf_hit_n = 5; else if (wvf_hit_n) wvf_hit_n--; wvf_lastb = b; }
+static UI_NOINLINE void wvf_twinkle(int32_t n, int32_t ymax, uint32_t v)   /* stars that twinkle, a few lit by the bands */
+{
+    int32_t i;
+    for (i = 0; i < n; i++)
+        wv_put((int32_t)(((uint32_t)i * 37u + 11u) % WVF_N), (int32_t)(((uint32_t)i * 53u + 7u) % (uint32_t)ymax),
+               wf_spec[i % 19] > 9 || ((wv_ph / 4u + (uint32_t)i * 7u) % 11u) == 0u ? v : v > 6u ? v - 6u : 2u);
+}
+static UI_NOINLINE void wv_disc(int32_t cx, int32_t cy, int32_t r, uint32_t v)   /* a filled circle of cells */
+{
+    int32_t y, hw;
+    for (y = -r; y <= r; y++) { hw = 0; while ((hw + 1) * (hw + 1) + y * y <= r * r) hw++; wv_line(cx - hw, cy + y, cx + hw, cy + y, v); }
+}
+/* COCKPIT: inside a ship (after the pixel-art cockpit reference): space through the canopy, stars drifting, a planet passing, lasers on
+ * the kick; the dashboard's screens show the music (the spectrum, a radar of the notes, the volume, the wave, the sound's name) */
+static UI_NOINLINE void wvf_cockpit(void)
+{
+    int32_t i, px, sp = 1 + wv_all() / 60, c = WVF_N / 2;
+    wv_fade(4);
+    wvf_hits();
+    for (i = 0; i < 30; i++) {                                         /* the stars, slowly towards us */
+        int32_t z0 = wvf_st[i][2], z1 = z0 - sp, x1, y1;
+        if (z1 < 8) { wvf_new(i, 1); continue; }
+        x1 = c + wvf_st[i][0] * 18 / z1, y1 = 16 + wvf_st[i][1] * 10 / z1;
+        if ((uint32_t)x1 >= WVF_N || (uint32_t)y1 >= 34u) { wvf_new(i, 1); continue; }
+        wv_line(c + wvf_st[i][0] * 18 / z0, 16 + wvf_st[i][1] * 10 / z0, x1, y1, (uint32_t)clamp(14 - z1 / 20, 3, 14));
+        wvf_st[i][2] = (int16_t)z1;
+    }
+    px = 100 - (int32_t)((wv_ph / 2u) % 220u);                         /* a planet crossing, lit from the left: dithered bands */
+    if (px > -30 && px < 110) {
+        int32_t y, x;
+        for (y = -16; y <= 16; y++)
+            for (x = -16; x <= 16; x++) {
+                int32_t d = x * x + y * y, l;
+                if (d > 256 || (uint32_t)(px + x) >= WVF_N || 18 + y < 0) continue;
+                l = 15 - (x + 16) * 12 / 32 - ((((px + x) ^ (18 + y)) & 1) ? 1 : 0);
+                wv_mem[(18 + y) * WVF_N + px + x] = (uint8_t)(16u | (uint32_t)clamp(l, 2, 15));
+            }
+    }
+}
+static UI_NOINLINE void wvf_disk(int32_t cx, int32_t cy, int32_t r, uint16_t col)   /* pixels: a filled circle */
+{
+    int32_t y, hw;
+    for (y = -r; y <= r; y++) { hw = 0; while ((hw + 1) * (hw + 1) + y * y <= r * r) hw++; WFR(cx - hw, cy + y, 2 * hw + 1, 1, col); }
+}
+static UI_NOINLINE void wvf_pline(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16_t col)   /* pixels: a line */
+{
+    int32_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = -(y1 > y0 ? y1 - y0 : y0 - y1), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, e = dx + dy, n = 0;
+    for (;;) {
+        cv_pset(x0, y0, col);
+        if ((x0 == x1 && y0 == y1) || ++n > 500) break;
+        { int32_t e2 = 2 * e; if (e2 >= dy) { e += dy; x0 += sx; } if (e2 <= dx) { e += dx; y0 += sy; } }
+    }
+}
+#define CK_B0 RGB(0x24, 0x21, 0x30)
+#define CK_B1 RGB(0x34, 0x30, 0x44)
+#define CK_B2 RGB(0x46, 0x41, 0x5a)
+#define CK_B3 RGB(0x5e, 0x58, 0x76)
+#define CK_SCR RGB(0x1a, 0x1c, 0x2a)
+#define CK_INK RGB(0x9c, 0xe8, 0xd0)
+#define CK_LED RGB(0xff, 0x5c, 0x5c)
+#define CK_LDIM RGB(0x5a, 0x24, 0x2c)
+static UI_NOINLINE void wvf_cockpit_over(void)                     /* the dashboard and the canopy over the space */
+{
+    int32_t y, i, k, x;
+    for (y = 0; y < 132; y++) {                                        /* the canopy's struts */
+        int32_t w = 14 + y * 26 / 132;
+        WFR(0, y, w, 1, CK_B0), WFR(240 - w, y, w, 1, CK_B0);
+        if (y < 6) WFR(0, y, 240, 1, CK_B0);
+    }
+    wvf_pline(14, 0, 40, 132, CK_B2), wvf_pline(225, 0, 199, 132, CK_B2);
+    for (y = 96; y < 240; y++) {                                       /* the dashboard: a hump in the middle */
+        int32_t x0 = y < 108 ? 92 - (y - 96) * 4 : y < 120 ? 44 - (y - 108) * 2 : 20, x1 = 240 - x0;
+        if (y >= 96) WFR(x0 < 0 ? 0 : x0, y, (x1 > 240 ? 240 : x1) - (x0 < 0 ? 0 : x0), 1, y < 98 ? CK_B3 : CK_B1);
+    }
+    WFR(0, 120, 20, 120, CK_B0), WFR(220, 120, 20, 120, CK_B0);
+    for (k = 0; k < 2; k++) {                                          /* the two screens */
+        int32_t sx = k ? 140 : 32;
+        WFR(sx - 3, 120, 74, 58, CK_B2), WFR(sx, 123, 68, 52, CK_SCR);
+        for (i = 0; i < 4; i++) WFR(sx - 6, 126 + i * 12, 2, 4, (wv_ph / 6u + (uint32_t)i + (uint32_t)k) % 5u ? CK_LDIM : CK_LED), WFR(sx + 72, 126 + i * 12, 2, 4, CK_LDIM);
+        if (!k) {                                                      /* left: the spectrum */
+            for (i = 0; i < 19; i++) { int32_t h = wf_spec[i] * 44 / 24; WFR(sx + 3 + i * 3 + i / 4, 172 - h, 2, h, CK_INK); }
+        } else {                                                       /* right: a radar, the notes as blips */
+            int32_t rx = sx + 34, ry = 149;
+            uint32_t a = wv_ph * 3u;
+            for (i = 0; i < 64; i += 2) cv_pset(rx + 22 * WV_SIN[(i + 16) & 63] / 127, ry + 22 * WV_SIN[i] / 127, CK_B3);
+            wvf_pline(rx - 24, ry, rx + 24, ry, CK_B2), wvf_pline(rx, ry - 24, rx, ry + 24, CK_B2);
+            wvf_pline(rx, ry, rx + 22 * wv_sin4(a + 64u) / 127, ry + 22 * wv_sin4(a) / 127, CK_INK);
+            for (i = 0; i < 19; i++) if (wf_spec[i] > 7) WFR(rx + (8 + wf_spec[i] / 2) * WV_SIN[((uint32_t)i * 7u + 16u) & 63u] / 127, ry + (8 + wf_spec[i] / 2) * WV_SIN[((uint32_t)i * 7u) & 63u] / 127, 2, 2, CK_LED);
+        }
+    }
+    WFR(108, 102, 24, 13, CK_SCR);                                     /* the middle: the tempo, a gauge of the volume */
+    { char b[6]; fmt_int(b, song.g[G_BPM]); wf_textc(120, 105, 0, b, CK_INK); }
+    wvf_disk(120, 152, 13, CK_B2), wvf_disk(120, 152, 11, CK_SCR);
+    { uint32_t a = 160u + (uint32_t)clamp(wv_all() / 3, 0, 64); wvf_pline(120, 152, 120 + 10 * wv_sin4(a + 64u) / 127, 152 + 10 * wv_sin4(a) / 127, CK_LED); }
+    WFR(78, 186, 84, 54, CK_B2), WFR(81, 189, 78, 51, CK_SCR);         /* the big screen below: the wave, the sound */
+    {
+        int32_t py = 212, s;
+        for (x = 0; x < 74; x++) {
+            s = scope_buf[(scope_w - 148u + 2u * (uint32_t)x) & (SCOPE_N - 1u)];
+            y = clamp(212 - s * 12 / 12000, 196, 228);
+            if (x) wvf_pline(82 + x, py, 83 + x, y, CK_INK);
+            py = y;
+        }
+        if (song.sel < NPART) { char nm[14]; trk_short_name(song.sel, nm); wf_textc(120, 231, 0, nm, CK_INK); }
+    }
+    for (i = 0; i < 18; i++) {                                         /* the red keys: lit by the bands */
+        int32_t bx = 24 + (i % 6) * 8, by = 196 + (i / 6) * 8;
+        WFR(bx, by, 6, 5, wf_spec[i] > 8 ? CK_LED : CK_LDIM), WFR(240 - bx - 6, by, 6, 5, wf_spec[18 - i] > 8 ? CK_LED : CK_LDIM);
+    }
+    for (x = 0; x < 3; x++) WFR(28 + x * 16, 226, 10, 4, CK_B3), WFR(170 + x * 16, 226, 10, 4, CK_B3);
+    if (wvf_hit_n) {                                                   /* the lasers */
+        uint16_t lc = wvf_hit_n > 3 ? WC_WHT : RGB(0xff, 0x50, 0x40);
+        wvf_pline(40, 100, 120 - wvf_hit_n * 4, 46, lc), wvf_pline(200, 100, 120 + wvf_hit_n * 4, 46, lc);
+        wvf_pline(41, 100, 121 - wvf_hit_n * 4, 46, lc), wvf_pline(199, 100, 119 + wvf_hit_n * 4, 46, lc);
+    }
+    WFR(117, 52, 7, 1, CK_LED), WFR(120, 49, 1, 7, CK_LED);             /* the sight */
+}
+/* HOLE: a black hole (after the rainbow one): the disc turns round it, the near half crosses in front, a ring of light over it, rays of
+ * the spectrum fan out below in the rainbow; cells 1..12 the rainbow, 13..14 white, 15 a dim star */
+static const uint16_t WVF_HOLE[16] = {0, RGB(0xff, 0x30, 0x40), RGB(0xff, 0x70, 0x20), RGB(0xff, 0xb0, 0x20), RGB(0xf0, 0xe8, 0x40), RGB(0x90, 0xf0, 0x40),
+    RGB(0x30, 0xe0, 0x80), RGB(0x30, 0xe0, 0xe0), RGB(0x40, 0x90, 0xff), RGB(0x70, 0x60, 0xff), RGB(0xb0, 0x50, 0xf0), RGB(0xf0, 0x50, 0xd0),
+    RGB(0xff, 0x60, 0x90), RGB(0xff, 0xe8, 0xc8), RGB(0xff, 0xff, 0xff), RGB(0x50, 0x58, 0x80)};
+static UI_NOINLINE void wvf_hole(void)
+{
+    int32_t i, cx = 40, cy = 34, all = wv_all();
+    uint32_t a;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    wvf_twinkle(26, 80, 15);
+    for (i = 0; i < 19; i++) {                                         /* the rays below */
+        uint32_t an = 72u + (uint32_t)i * 112u / 18u;                    /* (1/256 turn: from down-right round to down-left) */
+        int32_t l = 16 + wf_spec[i] * 2;
+        wv_line(cx + 14 * wv_sin4(an + 64u) / 127, cy + 6 * wv_sin4(an) / 127, cx + l * 2 * wv_sin4(an + 64u) / 127, cy + l * wv_sin4(an) / 127, 1u + (uint32_t)i * 12u / 19u);
+    }
+    for (a = 0; a < 256u; a += 2u) {                                    /* the disc, the far half */
+        int32_t s = wv_sin4(a), r;
+        if (s > 0) continue;
+        for (r = 18; r <= 34; r += 4) wv_put(cx + r * wv_sin4(a + 64u) / 127, cy + r * s / 127 / 4, 1u + ((a + wv_ph * (2u + (uint32_t)all / 40u) + (uint32_t)r * 5u) / 21u) % 12u);
+    }
+    wv_force = 1;
+    wv_disc(cx, cy, 12, 0);                                            /* the hole */
+    wv_force = 0;
+    for (a = 128u; a < 256u; a += 2u) wv_put(cx + 14 * wv_sin4(a + 64u) / 127, cy + 14 * wv_sin4(a) / 127, 13u + (a / 2u + wv_ph) % 2u);   /* the ring of light */
+    for (a = 0; a < 128u; a += 2u) {                                   /* the near half, in front */
+        int32_t r;
+        for (r = 18; r <= 34; r += 4) wv_put(cx + r * wv_sin4(a + 64u) / 127, cy + r * wv_sin4(a) / 127 / 4, 1u + ((a + wv_ph * (2u + (uint32_t)all / 40u) + (uint32_t)r * 5u) / 21u) % 12u);
+    }
+    wv_force = 1;
+    for (i = -12; i <= 12; i++) wv_put(cx + i, cy, (i & 1) ? 14u : 13u);   /* (its edge, bright) */
+    wv_force = 0;
+}
+/* ORB: a crystal planet (after the cyan one): a sphere with a glowing rim, lightning inside, purple spikes out of it, one per band */
+static UI_NOINLINE void wvf_orb(void)
+{
+    int32_t i, x, y, cx = 40, cy = 38, R = 17 + wv_bass() / 8;
+    wv_fade(4);
+    wvf_twinkle(30, 80, 16u | 12u);
+    for (y = -R; y <= R; y++)                                          /* the inside: the plasma's waves, bright where they cross */
+        for (x = -R; x <= R; x++) {
+            int32_t d = x * x + y * y, s;
+            if (d > R * R) continue;
+            s = WV_SIN[((uint32_t)(x * 5) + wv_ph * 3u) & 63u] + WV_SIN[((uint32_t)(y * 4) + wv_ph * 2u) & 63u] + WV_SIN[((uint32_t)((x + y) * 3) + wv_ph * 5u) & 63u];
+            wv_put(cx + x, cy + y, (uint32_t)clamp(6 + (s < 0 ? -s : s) / 40 - d * 3 / (R * R), 3, 15));
+        }
+    for (i = 0; i < 64; i++) wv_put(cx + (R + 1) * WV_SIN[(i + 16) & 63] / 127, cy + (R + 1) * WV_SIN[i] / 127, 15);   /* the rim */
+    for (i = 0; i < 24; i++) {                                         /* the spikes */
+        uint32_t an = (uint32_t)i * 256u / 24u + wv_ph / 2u;
+        int32_t l = R + 2 + wf_spec[i % 19] * 3 / 4, cs = wv_sin4(an + 64u), sn = wv_sin4(an), k;
+        for (k = -1; k <= 1; k++) {
+            uint32_t a2 = an + (uint32_t)(k * 3);
+            wv_line(cx + (R - 2) * wv_sin4(a2 + 64u) / 127, cy + (R - 2) * wv_sin4(a2) / 127, cx + (l - (k ? 3 : 0)) * cs / 127, cy + (l - (k ? 3 : 0)) * sn / 127, 16u | (k ? 10u : 14u));
+        }
+    }
+}
+/* FIRE: a ball of blue fire on a grid floor (after the magic one): flames lick up round it, lightning on the kick */
+static UI_NOINLINE void wvf_fire(void)
+{
+    int32_t i, cx = 40, by = 61, all = wv_all();
+    wv_fade(3);
+    wvf_hits();
+    for (i = 0; i < 9; i++) wv_line(0, 62 + i * i / 3, 79, 62 + i * i / 3, 3);   /* the floor */
+    for (i = -8; i <= 8; i++) wv_line(40 + i * 3, 62, 40 + i * 12, 79, 3);
+    for (i = 0; i < 34; i++) {                                         /* the flames: tongues that sway as they rise */
+        int32_t x0 = cx - 17 + i + WV_SIN[((uint32_t)i * 9u + wv_ph * 3u) & 63u] / 60, h = 14 + wf_spec[i % 19] * 3 / 2 + all / 16 - (i > 17 ? i - 17 : 17 - i) * 2 / 3
+                                                                         + WV_SIN[((uint32_t)i * 13u + wv_ph * 5u) & 63u] / 25, k;
+        for (k = 0; k < h; k++) wv_put(x0 + WV_SIN[((uint32_t)(k * 6 + i * 11) + wv_ph * 4u) & 63u] * k / 300, by - k, (k > h * 2 / 3 ? 16u : 0u) | (uint32_t)clamp(15 - k * 10 / (h + 1), 5, 15));
+    }
+    wv_disc(cx, by - 4, 5, 16u | 15u);                                  /* the core */
+    if (wvf_hit_n > 2) {                                               /* lightning */
+        int32_t x = cx, y = by - 4, k;
+        for (k = 0; k < 8; k++) { int32_t nx = x + (int32_t)(wvf_rnd() % 9u) - 4, ny = y - 4; wv_line(x, y, nx, ny, 16u | 14u); x = nx, y = ny; }
+    }
+}
+/* SKY: a scene, as a visual novel's (after the clouds one): a sky fading from lilac to pink, clouds drifting with the tempo, a moon, stars
+ * that light with the notes, a shooting star on the kick, and on the bridge someone and a cat, looking at it. Cells 1..4 the clouds
+ * (shadow .. light), 5 a star, 6 the moon, 7 the bridge, 8 its rail, 9 a shooting star, 15 a dim star */
+static const uint16_t WVF_SKY[16] = {0, RGB(0x98, 0x88, 0xd8), RGB(0xc8, 0x98, 0xd0), RGB(0xf0, 0xb0, 0xc8), RGB(0xff, 0xe0, 0xe0),
+    RGB(0xff, 0xff, 0xf0), RGB(0xff, 0xf4, 0xc0), RGB(0x2c, 0x2a, 0x48), RGB(0x58, 0x58, 0x80), RGB(0xff, 0xff, 0xff), 0, 0, 0, 0, 0, RGB(0xc0, 0xc8, 0xff)};
+static int32_t wvf_shoot[3];                  /* the shooting star: x, y, frames left */
+static UI_NOINLINE void wvf_sky(void)
+{
+    static const int8_t CL[5][3] = {{0, 0, 7}, {7, -3, 8}, {15, 1, 6}, {-7, 2, 5}, {21, 3, 4}};   /* a cloud: puffs (dx, dy, r) */
+    uint32_t drift = wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 240u;
+    int32_t i, k, y, x;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    wvf_hits();
+    for (i = 0; i < 22; i++)                                           /* the stars */
+        wv_put((int32_t)(((uint32_t)i * 37u + 5u) % WVF_N), (int32_t)(((uint32_t)i * 23u + 3u) % 30u), wf_spec[i % 19] > 8 ? 5u : 15u);
+    wv_disc(20, 9, 4, 6);                                              /* the moon: a crescent */
+    wv_force = 1; wv_disc(22, 8, 4, 0); wv_force = 0;
+    for (k = 0; k < 3; k++) {                                          /* the clouds, the far ones first */
+        int32_t bx = (int32_t)((drift / (uint32_t)(3 - k) + (uint32_t)k * 47u) % 130u) - 30, byy = 44 + k * 4;
+        for (i = 0; i < 5; i++) {
+            int32_t r = CL[i][2] + k, cx = bx + CL[i][0] * (k + 3) / 3, cy = byy + CL[i][1];
+            for (y = -r; y <= r; y++) for (x = -r; x <= r; x++)
+                if (x * x + y * y <= r * r && (uint32_t)(cx + x) < WVF_N && (uint32_t)(cy + y) < 58u)
+                    wv_mem[(cy + y) * WVF_N + cx + x] = (uint8_t)clamp(4 - (y + r) * 4 / (2 * r + 1) + (k == 2), 1, 4);
+        }
+    }
+    if (wvf_hit_n == 5 && !wvf_shoot[2]) wvf_shoot[0] = 50 + (int32_t)(wvf_rnd() % 28u), wvf_shoot[1] = 2, wvf_shoot[2] = 9;
+    if (wvf_shoot[2]) { wvf_shoot[2]--; wv_line(wvf_shoot[0], wvf_shoot[1], wvf_shoot[0] + 5, wvf_shoot[1] - 3, 9); wvf_shoot[0] -= 3, wvf_shoot[1] += 2; }
+    for (y = 60; y < 80; y++) wv_line(0, y, 79, y, 7);                  /* the bridge */
+    wv_line(0, 54, 79, 54, 8);
+    for (x = 2; x < 80; x += 8) wv_line(x, 54, x, 59, 8);
+}
+static UI_NOINLINE void wvf_sky_back(int32_t y0, int32_t hh)        /* the sky's colour, under the cells: lilac above, pink at the horizon */
+{
+    int32_t y;
+    for (y = y0; y < y0 + hh && y < 180; y++) {
+        int32_t t = y * 255 / 180, r = 0x70 + (0xf0 - 0x70) * t / 255, g = 0x88 + (0xb0 - 0x88) * t / 255, b = 0xe8 - (0xe8 - 0xd0) * t / 255;
+        WFR(0, y, 240, 1, RGB(r, g, b));
+    }
+}
+static const char *const WSKY_MAN[16] = {"..11..", ".1111.", ".1111.", "..11..", ".1111.", "111111", "111111", "111111", ".1111.", ".1111.",
+                                         ".1..1.", ".1..1.", ".1..1.", ".1..1.", ".1..1.", "11..11"};
+static const char *const WSKY_CAT[6] = {"1.1...", "111...", "111...", ".111..", ".1111.", ".11111"};
+static UI_NOINLINE void wvf_sky_over(void)                         /* someone and a cat on the bridge, as silhouettes */
+{
+    int32_t r, c;
+    for (r = 0; r < 16; r++) for (c = 0; c < 6; c++) if (WSKY_MAN[r][c] == '1') WFR(170 + c * 2, 148 + r * 2, 2, 2, RGB(0x1c, 0x1a, 0x30));
+    for (r = 0; r < 6; r++) for (c = 0; c < 6; c++) if (WSKY_CAT[r][c] == '1') WFR(188 + c * 2, 168 + r * 2, 2, 2, RGB(0x1c, 0x1a, 0x30));
+}
+static UI_NOINLINE void wvf_led(int32_t x, int32_t y, const char *s, uint16_t on)   /* MARQUEE: the 5 x 7 face as LEDs of 5 px */
+{
+    for (; *s; s++) {
+        uint32_t c = (uint8_t)*s, w, r, b;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        if (c < 32 || c > 95) c = '?';
+        w = WFM_W[c - 32];
+        if (x > -40 && x < 240)
+            for (r = 0; r < WFM_H; r++)
+                for (b = 0; b < w; b++)
+                    if ((WFM_ROWS[c - 32][r] >> (7 - b)) & 1u) WFR(x + (int32_t)b * 5, y + (int32_t)r * 5, 4, 4, on);
+        x += ((int32_t)w + 1) * 5;
+    }
+}
+static UI_NOINLINE void wvf_foot(void)                              /* the names at the foot, the SEL knob (as the window's) */
+{
+    int32_t i, x = 0, xs = 0, tot, off, kx = 228, ky = 233, yy, xx;
+    uint32_t a = 96u + (uint32_t)gv_mode * 192u / (GV_N - 1u);           /* 7 o'clock .. 5 o'clock */
+    WFR(0, 226, 240, 14, WC_LCD);
+    for (i = 0; i < GV_N; i++) { if (i == gv_mode) xs = x; x += wf_tw(1, GV_NAME[i]) + 5; }
+    tot = x;
+    off = clamp(xs - 80, 0, tot > 190 ? tot - 190 : 0);
+    wf_clx0 = 4, wf_clx1 = 198;
+    for (i = 0, x = 6 - off; i < GV_N; i++) x = wf_text(x, 230, 1, GV_NAME[i], i == gv_mode ? WC_GRN : WC_LOFF) + 5;
+    wf_clx0 = 0, wf_clx1 = 240;
+    wf_textr(kx - 7, 230, 1, "SEL", WC_LAB);
+    for (yy = -4; yy <= 4; yy++) for (xx = -4; xx <= 4; xx++) { int32_t d2 = xx * xx + yy * yy; if (d2 <= 16) cv_pset(kx + xx, ky + yy, d2 >= 10 ? WC_BSH : WC_BTN); }
+    for (yy = 0; yy <= 3; yy++) cv_pset(kx + wv_sin4(a + 64u) * yy / 127, ky + wv_sin4(a) * yy / 127, WC_AMB);
+}
+/* ---- the neon ones (after the line-art references): drawn in pixels, thin bright strokes, the device's own values in big digits.
+ * The history they keep (WATERFALL, TERRAIN, CURVES) lives in wv_mem: these pictures have no cells */
+#define NE_PUR RGB(0xb0, 0x70, 0xe8)
+#define NE_GRN RGB(0x30, 0xe0, 0x80)
+#define NE_BLU RGB(0x60, 0x90, 0xff)
+#define NE_RED RGB(0xff, 0x40, 0x60)
+#define NE_PNK RGB(0xff, 0x98, 0xa8)
+#define NE_WHT RGB(0xe8, 0xe8, 0xf8)
+#define NE_DIM RGB(0x40, 0x30, 0x60)
+#define NE_BRN RGB(0xc8, 0x84, 0x5c)
+#define NE_ORG RGB(0xff, 0x90, 0x30)
+static UI_NOINLINE void ne_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16_t c)   /* a 2 px stroke */
+{
+    int32_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y1 - y0 : y0 - y1;
+    wvf_pline(x0, y0, x1, y1, c);
+    if (dx > dy) wvf_pline(x0, y0 + 1, x1, y1 + 1, c); else wvf_pline(x0 + 1, y0, x1 + 1, y1, c);
+}
+static UI_NOINLINE void ne_line3(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16_t c)   /* a 3 px stroke (the little people) */
+{
+    int32_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y1 - y0 : y0 - y1;
+    ne_line(x0, y0, x1, y1, c);
+    if (dx > dy) wvf_pline(x0, y0 - 1, x1, y1 - 1, c); else wvf_pline(x0 - 1, y0, x1 - 1, y1, c);
+}
+/* the figure every scene shares (FLOAT's two): a flat silhouette, a round head, a block of a body, arms and legs as strokes. x, y: its feet;
+ * s: its size in eighths (8 = 64 px tall; below 0: upside down, a reflection); dir: which way it faces; p: the pose, the hands from the
+ * shoulders and the feet from the hips (dx, dy at size 8) */
+static UI_NOINLINE void fg_man(int32_t x, int32_t y, int32_t s, int32_t dir, const int8_t *p, uint16_t c)
+{
+    int32_t a = s < 0 ? -s : s, sh = y - 48 * s / 8, hp = y - 27 * s / 8, r = 6 * a / 8, k;
+    wvf_disk(x, y - 58 * s / 8, r < 2 ? 2 : r, c);
+    WFR(x - r, s < 0 ? y + 27 * a / 8 : y - 51 * a / 8, 2 * r, 24 * a / 8, c);
+    for (k = 0; k < 4; k++) {
+        int32_t bx = x + (k & 1 ? 1 : -1) * (k < 2 ? r - 1 : r / 2), by = k < 2 ? sh : hp, ex = x + dir * p[k * 2] * a / 8, ey = by + p[k * 2 + 1] * s / 8;
+        if (a > 8) ne_line3(bx, by, ex, ey, c); else ne_line(bx, by, ex, ey, c);
+    }
+}
+static UI_NOINLINE void ne_poly(const int16_t *p, int32_t n, int32_t ox, int32_t oy, int32_t sc, uint16_t c)   /* a polyline, points x, y in 1/16 px (sc 16 = 1:1) */
+{
+    int32_t i;
+    for (i = 1; i < n; i++) ne_line(ox + p[2 * i - 2] * sc / 16, oy + p[2 * i - 1] * sc / 16, ox + p[2 * i] * sc / 16, oy + p[2 * i + 1] * sc / 16, c);
+}
+static UI_NOINLINE void ne_ring(int32_t cx, int32_t cy, int32_t r, uint16_t c)
+{
+    int32_t i, px = cx + r, py = cy;
+    for (i = 1; i <= 32; i++) { int32_t x = cx + r * WV_SIN[((uint32_t)i * 2u + 16u) & 63u] / 127, y = cy + r * WV_SIN[((uint32_t)i * 2u) & 63u] / 127; ne_line(px, py, x, y, c); px = x, py = y; }
+}
+static UI_NOINLINE void ne_num(int32_t x, int32_t y, int32_t h, int32_t v, uint16_t c)   /* thin digits, a seven-segment cut, h tall */
+{
+    static const uint8_t SEG[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+    char b[8];
+    int32_t w = h / 2, m = h / 2, i;
+    fmt_int(b, clamp(v, 0, 999));
+    for (i = 0; b[i]; i++, x += w + h / 4) {
+        uint32_t s = SEG[(b[i] - '0') % 10];
+        if (s & 1u) ne_line(x, y, x + w, y, c);
+        if (s & 2u) ne_line(x + w, y, x + w, y + m, c);
+        if (s & 4u) ne_line(x + w, y + m, x + w, y + h, c);
+        if (s & 8u) ne_line(x, y + h, x + w, y + h, c);
+        if (s & 16u) ne_line(x, y + m, x, y + h, c);
+        if (s & 32u) ne_line(x, y, x, y + m, c);
+        if (s & 64u) ne_line(x, y + m, x + w, y + m, c);
+    }
+}
+static UI_NOINLINE void ne_gauge(int32_t cx, int32_t cy, int32_t f, uint16_t c)   /* a little dial: ticks round, a needle at f 0..1024 */
+{
+    uint32_t a = 160u + (uint32_t)f * 64u / 1024u, t;
+    for (t = 0; t <= 4u; t++) { uint32_t at = 160u + t * 16u; ne_line(cx + 11 * wv_sin4(at + 64u) / 127, cy + 11 * wv_sin4(at) / 127, cx + 14 * wv_sin4(at + 64u) / 127, cy + 14 * wv_sin4(at) / 127, NE_DIM); }
+    ne_line(cx, cy, cx + 12 * wv_sin4(a + 64u) / 127, cy + 12 * wv_sin4(a) / 127, c);
+    WFR(cx - 1, cy - 1, 3, 3, c);
+}
+static UI_NOINLINE int32_t ne_frac(int32_t v, int32_t lo, int32_t hi) { return hi > lo ? clamp((v - lo) * 1024 / (hi - lo), 0, 1024) : 0; }
+static UI_NOINLINE void ne_hist(uint32_t rows, uint32_t cols)       /* the spectrum's history: row 0 the newest (wv_mem, cols bands) */
+{
+    uint32_t r, i;
+    for (r = rows - 1u; r > 0u; r--) for (i = 0; i < cols; i++) wv_mem[r * cols + i] = wv_mem[(r - 1u) * cols + i];
+    for (i = 0; i < cols; i++) wv_mem[i] = sp_s[i * 19u / cols];   /* (smoothed: it rolls, it does not spike) */
+}
+/* WATERFALL: the spectrum's last 16 moments as coloured lines in perspective over a grid; the level as a MIN / MAX ladder; the tempo, big */
+static UI_NOINLINE void ne_waterfall(void)
+{
+    static const uint16_t RC[16] = {RGB(0x40, 0x70, 0xff), RGB(0x30, 0x90, 0xff), RGB(0x20, 0xb0, 0xe0), RGB(0x20, 0xc8, 0xa0), RGB(0x30, 0xe0, 0x80), RGB(0x60, 0xe8, 0x80),
+        RGB(0xa0, 0xa8, 0xb8), RGB(0xc0, 0xc4, 0xd0), RGB(0xff, 0xff, 0xff), RGB(0xe0, 0xe0, 0xe8), RGB(0xff, 0x50, 0x60), RGB(0xff, 0x40, 0x58), RGB(0xf0, 0x38, 0x60),
+        RGB(0xc0, 0x40, 0x90), RGB(0x90, 0x40, 0xb0), RGB(0x70, 0x40, 0xa0)};
+    int32_t k, i, lv = clamp(wv_all() / 14, 0, 16);
+    for (i = 0; i <= 6; i++) ne_line(40 + i * 24, 196 - i * 0, 100 + i * 24, 166, NE_DIM);   /* the floor grid */
+    for (i = 0; i <= 3; i++) ne_line(40 + i * 20, 196 - i * 10, 184 + i * 20, 196 - i * 10, NE_DIM);
+    for (k = 15; k >= 0; k--) {                                        /* the lines, the oldest behind */
+        int32_t px = 0, py = 0;
+        for (i = 0; i < 19; i++) {
+            int32_t x = 52 + i * 6 + k * 6, y = 192 - k * 3 - clamp(wv_mem[(uint32_t)k * 19u + (uint32_t)i], 0, 20) * 4;
+            if (i) wvf_pline(px, py, x, y, RC[15 - k]);
+            px = x, py = y;
+        }
+    }
+    wf_text(8, 40, 1, "MAX", NE_BLU), wf_text(8, 186, 1, "MIN", NE_BLU);
+    for (i = 0; i < 16; i++) WFR(30, 186 - i * 9, i < 4 ? 10 : 7, 2, i < lv ? NE_GRN : NE_DIM);
+    ne_num(168, 20, 34, song.g[G_BPM], NE_WHT);
+    for (i = 0; i < 6; i++) WFR(10 + i * 14 + (int32_t)((wv_ph + (uint32_t)i * 3u) % 4u), 214 + (i & 1) * 3, 10, 2, NE_BLU);
+}
+/* TERRAIN: the spectrum's history as an orange wire landscape on a dark floor, crosses for stars behind */
+static UI_NOINLINE void ne_terrain(void)
+{
+    int32_t k, i, x, y;
+    for (i = 0; i < 26; i++) { x = (int32_t)(((uint32_t)i * 47u + 13u) % 230u) + 5, y = (int32_t)(((uint32_t)i * 29u + 7u) % 110u) + 4;
+        WFR(x - 2, y, 5, 1, NE_WHT), WFR(x, y - 2, 1, 5, NE_WHT); }
+    for (y = 0; y < 70; y++) {                                         /* the floor: a dark orange plane, seen at an angle */
+        int32_t xa = 4 + y * 2, xb = 236 - (70 - y) * 1;
+        if (xb > xa) WFR(xa, 150 + y, xb - xa, 1, (y & 1) ? RGB(0x50, 0x20, 0x08) : RGB(0x60, 0x28, 0x0c));
+    }
+    for (k = 15; k >= 0; k--) {                                        /* the wires: rows of the history, the newest in front */
+        int32_t px = 0, py = 0;
+        for (i = 0; i < 19; i++) {
+            x = 10 + i * 10 + k * 6, y = 214 - k * 5 - i * 2 - wv_mem[(uint32_t)k * 19u + (uint32_t)i] * 4;
+            if (i) ne_line(px, py, x, y, k < 4 ? NE_ORG : RGB(0xe0, 0x70, 0x20));
+            px = x, py = y;
+        }
+    }
+}
+/* CURVES: six smooth lines drifting left, each a part of the spectrum; above, the four knobs of the effects as dials */
+static UI_NOINLINE void ne_curves(void)
+{
+    static const uint16_t CC[6] = {RGB(0x40, 0xc8, 0xf0), RGB(0x50, 0x90, 0xf0), RGB(0x80, 0x50, 0x90), RGB(0xff, 0x90, 0x98), RGB(0xa0, 0x60, 0xe0), RGB(0xff, 0x40, 0x60)};
+    static const uint16_t KC4[4] = {RGB(0x60, 0x90, 0xff), RGB(0x30, 0xe0, 0x80), RGB(0xe0, 0xe0, 0xf8), RGB(0xff, 0x40, 0x60)};
+    int32_t c, x, k;
+    for (k = 0; k < 4; k++) {                                          /* the knobs: KNOB 1..4 of the effects group */
+        int16_t *vp;
+        const param_desc_t *d = wf_sl((uint32_t)wf_grp % 3u * 4u + (uint32_t)k, &vp);
+        int32_t cx = 36 + k * 56, cy = 64, f = d ? wf_frac(d, *vp) : 0;
+        uint32_t a = 96u + (uint32_t)f * 192u / 1024u;
+        WFR(cx - 20, cy, 6, 2, NE_DIM), WFR(cx + 14, cy, 6, 2, NE_DIM), WFR(cx, cy - 22, 2, 6, NE_DIM), WFR(cx, cy + 16, 2, 6, NE_DIM);
+        ne_line(cx, cy, cx + 16 * wv_sin4(a + 64u) / 127, cy + 16 * wv_sin4(a) / 127, KC4[k]);
+        wvf_disk(cx + 1, cy + 1, 4, KC4[k]);
+    }
+    for (c = 0; c < 6; c++) {                                          /* the lines: their history, smoothed */
+        int32_t px = 0, py = 0;
+        for (x = 0; x < 40; x++) {
+            int32_t v = (wv_mem[(uint32_t)x * 6u + (uint32_t)c] * 2 + wv_mem[(uint32_t)(x ? x - 1 : 0) * 6u + (uint32_t)c] + wv_mem[(uint32_t)(x < 39 ? x + 1 : 39) * 6u + (uint32_t)c]) / 4;
+            int32_t sx = 226 - x * 5, sy = 132 + c * 10 + 26 - v * 3;
+            if (x) wvf_pline(px, py, sx, sy, CC[c]);
+            px = sx, py = sy;
+        }
+    }
+}
+/* FLOW: the sound's path, a diagram: the LFO moves a wave, the effects, the tape, the four tracks' knobs into the EQ, the drive, the
+ * speaker. Signals run along the lines; the warnings blink when it is loud */
+static UI_NOINLINE void ne_box(int32_t x, int32_t y, int32_t w, int32_t h, const char *t, uint16_t c)
+{
+    ne_line(x, y, x + w, y, c), ne_line(x + w, y, x + w, y + h, c), ne_line(x + w, y + h, x, y + h, c), ne_line(x, y + h, x, y, c);
+    if (t) wf_textc(x + w / 2 + 1, y + h / 2 - 3, 1, t, c);
+}
+static UI_NOINLINE void ne_warn(int32_t x, int32_t y, int on)
+{
+    uint16_t c = on ? NE_RED : NE_DIM;
+    ne_line(x, y + 12, x + 7, y, c), ne_line(x + 7, y, x + 14, y + 12, c), ne_line(x + 14, y + 12, x, y + 12, c);
+    WFR(x + 7, y + 4, 1, 4, c), WFR(x + 7, y + 9, 1, 1, c);
+}
+static UI_NOINLINE void ne_flow(void)
+{
+    int32_t i, k, all = wv_all(), loud = all > 150, blink = (int32_t)((wv_ph / 4u) & 1u);
+    uint32_t sp = wv_ph * 2u;
+    ne_box(60, 44, 34, 16, "LFO", NE_GRN);
+    ne_line(64, 60, 64, 70, NE_DIM), ne_line(64, 52, 44, 52, NE_DIM), ne_line(44, 52, 44, 74, NE_DIM), ne_line(86, 60, 86, 70, NE_DIM);
+    for (i = 0; i < 24; i++) cv_pset(26 + i, 82 + WV_SIN[((uint32_t)i * 8u + sp) & 63u] * 6 / 127, NE_BLU), cv_pset(26 + i, 83 + WV_SIN[((uint32_t)i * 8u + sp) & 63u] * 6 / 127, NE_BLU);
+    ne_box(66, 72, 34, 18, "FX", NE_WHT);
+    ne_line(104, 81, 120, 81, NE_WHT), ne_line(116, 77, 120, 81, NE_WHT), ne_line(116, 85, 120, 81, NE_WHT);
+    ne_box(124, 72, 18, 18, "I", NE_RED);
+    ne_warn(148, 74, loud && blink);
+    for (k = 0; k < 2; k++) {                                          /* the tape: two reels turning while it plays */
+        int32_t cx = 36 + k * 30, cy = 122;
+        ne_ring(cx, cy, 11, NE_WHT);
+        for (i = 0; i < 3; i++) { uint32_t a = (uint32_t)i * 85u + (song.playing ? wv_ph * 8u : 0u); ne_line(cx, cy, cx + 8 * wv_sin4(a + 64u) / 127, cy + 8 * wv_sin4(a) / 127, NE_WHT); }
+    }
+    ne_line(84, 112, 84, 132, NE_RED);
+    ne_line(92, 122, 116, 122, NE_WHT), ne_line(112, 118, 116, 122, NE_WHT), ne_line(112, 126, 116, 122, NE_WHT);
+    ne_box(120, 113, 32, 18, "EQ", NE_BLU);
+    ne_warn(160, 115, all > 110 && blink);
+    for (k = 0; k < 4; k++) {                                          /* the four tracks: their levels as knobs, the signal coming in */
+        int32_t cx = 140 + k * 20, cy = 52, f = (int32_t)trk_level((uint32_t)k) * 1024 / 127;
+        uint32_t a = 160u + (uint32_t)f * 64u / 1024u;
+        ne_line(cx, 20 + (int32_t)((wv_ph + (uint32_t)k * 2u) % 8u), cx, 34, NE_WHT);
+        ne_line(cx - 7, cy, cx - 5, cy - 5, NE_DIM), ne_line(cx + 7, cy, cx + 5, cy - 5, NE_DIM);
+        ne_line(cx, cy, cx + 8 * wv_sin4(a + 64u) / 127, cy + 8 * wv_sin4(a) / 127, wf_spec[k * 5] > 6 ? NE_WHT : NE_DIM);
+        ne_line(cx, cy + 4, cx, 66, NE_DIM);
+    }
+    ne_line(140, 66, 200, 66, NE_DIM), ne_line(170, 66, 170, 100, NE_DIM), ne_line(170, 100, 136, 100, NE_DIM), ne_line(136, 100, 136, 112, NE_DIM);
+    ne_warn(214, 44, wf_spec[18] > 10 && blink);
+    ne_line(136, 132, 136, 140, NE_DIM);
+    ne_box(120, 140, 32, 18, "FX", NE_GRN);
+    ne_box(158, 140, 46, 18, "DRIVE", NE_RED);
+    ne_line(153, 149, 157, 149, NE_WHT);
+    ne_warn(172, 166, wvf_hit_n > 0);
+    ne_line(204, 149, 214, 149, NE_WHT), ne_line(214, 149, 214, 110, NE_WHT), ne_line(217, 149, 217, 113, NE_WHT);
+    {                                                                  /* the speaker: it pushes with the bass */
+        int32_t b = wv_bass() / 4;
+        ne_box(208, 96, 8, 16, 0, NE_RED);
+        ne_line(216, 96, 228 + b, 86, NE_RED), ne_line(216, 112, 228 + b, 122, NE_RED), ne_line(228 + b, 86, 228 + b, 122, NE_RED);
+    }
+    ne_box(28, 160, 34, 18, 0, NE_PUR);
+    WFR(36, 166, 4, 4, NE_PUR), WFR(46, 166, 3, 3, NE_PUR), WFR(52, 166, 3, 3, NE_PUR);
+    {                                                                  /* the FM-1's keys: the ones sounding light up */
+        static const uint8_t BL[12] = {0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0};   /* from F: which are black */
+        int32_t k, wx = 0;
+        ne_box(70, 156, 52, 26, 0, NE_PUR);
+        for (k = 0; k < 27; k++) if (!BL[k % 12]) { WFR(73 + wx * 3, 159, 2, 20, (nk_mask >> k) & 1u ? RGB(0xff, 0xe0, 0x60) : NE_WHT); wx++; }
+        for (k = 0, wx = 0; k < 27; k++) { if (!BL[k % 12]) { wx++; continue; } WFR(72 + wx * 3, 159, 2, 12, (nk_mask >> k) & 1u ? RGB(0xff, 0x60, 0xc0) : RGB(0x20, 0x10, 0x30)); }
+    }
+    ne_line(78, 169, 66, 169, NE_WHT), ne_line(45, 158, 45, 136, NE_WHT);
+    for (i = 0; i < 4; i++) ne_ring(186 + i * 12, 22, 3, trk[i].p[P_MUTE] ? NE_DIM : NE_RED);
+}
+/* COW: a cow in neon lines; inside it the sound goes round (in at the mouth: a ring, a mixer, the spectrum, a square wave out), the
+ * device's FREQ (the DJ filter), DELAY and FEEDBACK at its side */
+static const int16_t NE_COW[] = {48, 132, 40, 118, 44, 100, 58, 86, 54, 74, 66, 82, 78, 78, 90, 86, 112, 76, 148, 72, 176, 74, 192, 80, 200, 96, 199, 118,
+    194, 146, 196, 172, 191, 180, 183, 180, 184, 158, 178, 146, 150, 150, 120, 149, 116, 172, 118, 180, 110, 180, 108, 160, 104, 146, 92, 138,
+    82, 128, 70, 128, 58, 132, 48, 132};
+static UI_NOINLINE void ne_cow(void)
+{
+    int32_t i, f = ne_frac(song.g[G_FILT], GP[G_FILT].min, GP[G_FILT].max);
+    ne_poly(NE_COW, (int32_t)(sizeof NE_COW / sizeof NE_COW[0] / 2), 30, 20, 16, NE_BRN);
+    ne_line(196, 92, 204, 120, NE_BRN), ne_line(204, 120, 202, 146, NE_BRN), ne_line(198, 146, 206, 152, NE_BRN);   /* the tail */
+    ne_line(160, 158, 162, 166, NE_BRN), ne_line(162, 166, 170, 166, NE_BRN), ne_line(170, 166, 172, 158, NE_BRN);   /* the udder */
+    WFR(84, 112, 3, 3, NE_BLU);                                        /* the eye */
+    for (i = 0; i < 10; i++) {                                         /* the sound going in, dashes running */
+        int32_t x = 92 + i * 6, y = 128 + (i * i) / 6 - i;
+        if (((uint32_t)i + wv_ph / 2u) % 3u) WFR(x, y, 3, 2, NE_BLU);
+    }
+    ne_ring(158, 120, 9, NE_BLU), ne_ring(158, 120, 5, NE_WHT);
+    ne_line(158, 129, 158, 136, NE_BLU);
+    ne_ring(158, 146, 9, NE_GRN);
+    WFR(155, 146, 2, 2, NE_PNK), WFR(160, 143, 2, 2, NE_GRN), WFR(160, 149, 2, 2, NE_RED);
+    for (i = 0; i < 8; i++) {                                          /* the spectrum in its belly */
+        int32_t h = 3 + wf_spec[i * 2] / 3;
+        WFR(176 + i * 5, 132 - h, 2, h, i & 1 ? NE_RED : NE_BLU);
+        WFR(176 + i * 5, 136, 2, 2 + wf_spec[i * 2 + 1] / 4, NE_GRN);
+    }
+    ne_ring(196, 152, 8, NE_RED);
+    for (i = 0; i < 4; i++) WFR(190, 148 + i * 3, 12, 1, NE_RED);
+    for (i = 0; i < 4; i++) {                                          /* a square wave out, its height the bass */
+        int32_t x = 182 + i * 8, h = 6 + wv_bass() / 3;
+        ne_line(x, 112, x, 112 - h, NE_RED), ne_line(x, 112 - h, x + 4, 112 - h, NE_RED), ne_line(x + 4, 112 - h, x + 4, 112, NE_RED), ne_line(x + 4, 112, x + 8, 112, NE_RED);
+    }
+    wf_text(10, 20, 1, "FREQ", NE_BLU);
+    ne_gauge(24, 52, f, NE_BLU);
+    wf_text(10, 70, 1, "DELAY", NE_PUR);
+    ne_num(12, 84, 24, TSEL->p[P_DLY], NE_GRN);
+    wf_text(10, 120, 1, "FDBACK", NE_BRN);
+    ne_num(12, 134, 30, song.g[G_DFDBK], NE_WHT);
+    ne_box(170, 14, 62, 14, "SIDEBAND", wvf_hit_n ? NE_RED : NE_DIM);
+    for (i = 0; i < 9; i++) WFR(212, 52 + i * 6, 12, 2, i < 9 - clamp(wv_all() / 25, 0, 9) ? NE_DIM : i < 4 ? NE_RED : NE_PUR);
+    ne_line(32, 198, 236, 198, NE_GRN);                                /* the grass */
+    for (i = 0; i < 18; i++) WFR(36 + i * 11, 194 - (wf_spec[i] > 10 ? 4 : 0), 2, 4 + (wf_spec[i] > 10 ? 4 : 0), NE_GRN);
+}
+/* BOXER: a boxer in neon lines, the right glove punches on the kick; FREQ, PUNCH (the bass), ROUNDS (the bars), POWER (the level) */
+static const int16_t NE_BOXT[] = {110, 84, 92, 94, 86, 112, 82, 128, 92, 150, 140, 150, 148, 124, 152, 104, 144, 94, 126, 84};
+static int32_t ne_rounds;
+static UI_NOINLINE void ne_boxer(void)
+{
+    int32_t i, f = ne_frac(song.g[G_FILT], GP[G_FILT].min, GP[G_FILT].max), pu = wvf_hit_n * 3, hx = 120, hy = 62;
+    if (wvf_hit_n == 5) ne_rounds = (ne_rounds + 1) % 100;
+    for (i = 0; i <= 32; i++) {                                        /* the head */
+        int32_t x0 = hx + 12 * WV_SIN[((uint32_t)i * 2u + 16u) & 63u] / 127, y0 = hy + 15 * WV_SIN[((uint32_t)i * 2u) & 63u] / 127;
+        int32_t x1 = hx + 12 * WV_SIN[((uint32_t)i * 2u + 18u) & 63u] / 127, y1 = hy + 15 * WV_SIN[((uint32_t)i * 2u + 2u) & 63u] / 127;
+        ne_line(x0, y0, x1, y1, NE_GRN);
+    }
+    ne_line(114, 60, 117, 60, NE_GRN), ne_line(123, 60, 126, 60, NE_GRN), ne_line(116, 69, 124, 69, NE_GRN);
+    ne_poly(NE_BOXT, (int32_t)(sizeof NE_BOXT / sizeof NE_BOXT[0] / 2), 0, 0, 16, NE_GRN);
+    ne_line(112, 76, 110, 84, NE_GRN), ne_line(128, 76, 130, 84, NE_GRN);
+    ne_line(104, 104, 118, 112, NE_GRN), ne_line(136, 104, 122, 112, NE_GRN), ne_line(110, 124, 130, 124, NE_GRN), ne_line(110, 136, 130, 136, NE_GRN);
+    ne_line(86, 112, 78, 132, NE_GRN), ne_line(78, 132, 92, 120, NE_GRN);   /* the guard arm */
+    ne_ring(98, 112, 11, NE_RED), ne_line(94, 108, 100, 104, NE_RED);
+    ne_line(150, 108, 162 + pu, 124 - pu / 2, NE_GRN);                 /* the punching arm */
+    ne_ring(170 + pu, 128 - pu / 2, 13 + pu / 3, NE_RED), ne_line(162 + pu, 124 - pu / 2, 170 + pu, 118 - pu / 2, NE_RED);
+    if (wvf_hit_n) for (i = 0; i < 5; i++) { uint32_t a = 176u + (uint32_t)i * 10u; ne_line(hx + 22 * wv_sin4(a + 64u) / 127, hy - 6 + 22 * wv_sin4(a) / 127, hx + 30 * wv_sin4(a + 64u) / 127, hy - 6 + 30 * wv_sin4(a) / 127, NE_GRN); }
+    for (i = 0; i < 10; i++) WFR(146, 40 + i * 5, 8, 2, i < 10 - clamp(wv_all() / 22, 0, 10) ? NE_DIM : NE_GRN);
+    ne_box(184, 168, 22, 14, "FX", NE_PUR);
+    wf_text(10, 22, 1, "FREQ", NE_PUR), ne_gauge(26, 56, f, NE_GRN);
+    ne_line(40, 32, 92, 32, NE_PUR), ne_line(92, 32, 108, 44, NE_PUR);
+    wf_text(10, 96, 1, "PUNCH", NE_PUR), ne_num(12, 112, 34, clamp(wv_bass() * 4, 0, 99), NE_GRN);
+    ne_line(52, 150, 104, 150, NE_PUR), ne_line(104, 150, 112, 140, NE_PUR);
+    wf_text(178, 22, 1, "ROUNDS", NE_GRN), ne_num(184, 38, 34, ne_rounds, NE_WHT);
+    wf_text(184, 96, 1, "POWER", NE_RED), ne_num(184, 112, 34, clamp(wv_all() / 4, 0, 99), NE_RED);
+}
+
+/* HIGHWAY: a road at night in a long exposure (after the light-trails reference): streaks of light come from the horizon and rush past,
+ * faster and more of them with the sound; red tail lights going away */
+static uint8_t hw_p[30][2];                   /* a light: its lane, how near (0 far .. 255 past) */
+static UI_NOINLINE void hw_at(uint32_t lane, int32_t d, int32_t *x, int32_t *y)
+{
+    int32_t tx = -40 + (int32_t)lane * 18, ty = 96 + (lane > 5u ? 10 : 0), f = d * d / 255;
+    *x = 52 + (tx - 52) * f / 255, *y = 22 + (ty - 22) * f / 255;
+}
+static UI_NOINLINE void sc_highway(void)
+{
+    int32_t i, all = wv_all(), x0, y0, x1, y1;
+    wv_fade(2);
+    wv_line(52, 22, -10, 90, 3), wv_line(52, 22, 90, 60, 3);
+    for (i = 0; i < 30; i++) {
+        uint8_t *q = hw_p[i];
+        int32_t d0 = q[1], d1 = d0 + 3 + d0 / 14 + all / 30, back = i >= 24;
+        if (i >= 12 + all / 12 && !back) { q[1] = 0; continue; }   /* (more lights with more sound) */
+        if (back) d1 = d0 - 2 - d0 / 30;
+        if (d1 > 255 || d1 < 0 || !q[0]) { q[0] = (uint8_t)(1u + wvf_rnd() % 7u), q[1] = (uint8_t)(back ? 120u + wvf_rnd() % 100u : wvf_rnd() % 30u); continue; }
+        hw_at(q[0], d0, &x0, &y0), hw_at(q[0], d1, &x1, &y1);
+        wv_line(x0, y0, x1, y1, back ? 16u | 9u : (uint32_t)clamp(6 + d1 / 28, 6, 15));
+        q[1] = (uint8_t)d1;
+    }
+}
+static UI_NOINLINE void sc_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t v);
+/* VORTEX: rings of points flowing out of a centre off to one side (after the dotted reference), wine near it, navy, green, blue far off
+ * where they turn into little crosses; a yellow square by the centre jumps on the kick. Cells: 1..4 wine, 5..8 navy, 9..12 green, 13..15 blue */
+static const uint16_t SC_VORTEX[16] = {0, RGB(0x80, 0x28, 0x50), RGB(0x80, 0x28, 0x50), RGB(0x80, 0x28, 0x50), RGB(0x80, 0x28, 0x50),
+    RGB(0x26, 0x24, 0x60), RGB(0x26, 0x24, 0x60), RGB(0x26, 0x24, 0x60), RGB(0x26, 0x24, 0x60), RGB(0x30, 0x90, 0x50), RGB(0x30, 0x90, 0x50),
+    RGB(0x30, 0x90, 0x50), RGB(0x30, 0x90, 0x50), RGB(0x60, 0xb0, 0xff), RGB(0x60, 0xb0, 0xff), RGB(0xff, 0xf0, 0x10)};
+static UI_NOINLINE void sc_vortex(void)
+{
+    static uint32_t flow;
+    int32_t r, k, cx = 26, cy = 28;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    wvf_hits();
+    flow += 1u + (uint32_t)wv_all() / 50u;
+    for (r = 0; r < 14; r++) {
+        int32_t rad = 4 + r * 5 + (int32_t)(flow % 5u), n = 10 + rad / 2;
+        uint32_t v = rad < 16 ? 2u : rad < 30 ? 6u : rad < 48 ? 10u : 14u;
+        for (k = 0; k < n; k++) {
+            uint32_t a = (uint32_t)k * 256u / (uint32_t)n + (uint32_t)rad + flow / 2u;
+            int32_t x = cx + rad * wv_sin4(a + 64u) / 127, y = cy + rad * wv_sin4(a) / 127;
+            if (wf_spec[k % 19] < 3 && rad > 40) continue;
+            wv_put(x, y, v);
+            if (rad >= 30) wv_put(x - 1, y, v), wv_put(x + 1, y, v), wv_put(x, y - 1, v), wv_put(x, y + 1, v);
+        }
+    }
+    sc_rect(34, 38 - (wvf_hit_n > 2 ? 3 : 0), 8, 8, 15);
+}
+static UI_NOINLINE void wf_big(int32_t x, int32_t y, int32_t z, const char *s, uint16_t col);
+/* NEO: a neon city at night (after the anime ones): towers in two layers with windows the bands light, searchlights sweeping, green street
+ * lamps; on the kick a red motorbike tears across leaving a long red light trail */
+static int32_t neo_bike = -1000;
+static UI_NOINLINE void ne_neo(void)
+{
+    int32_t i, r, c;
+    for (i = 0; i < 46; i++) WFR(0, i * 4, 240, 4, RGB(0x06 + i / 3, 0x18 + i / 2, 0x26 + i / 2));
+    for (i = 0; i < 3; i++) { int32_t bx = 50 + i * 70; wvf_pline(bx, 170, bx + WV_SIN[(wv_ph + (uint32_t)i * 20u) & 63u] * 60 / 127, 0, RGB(0x70, 0x80, 0x48)); }
+    for (i = 0; i < 12; i++) {                                         /* the far towers */
+        int32_t x = i * 21 - 4, h = 70 + (int32_t)(((uint32_t)i * 37u) % 60u), t = 170 - h;
+        WFR(x, t, 19, h, RGB(0x10, 0x2c, 0x44));
+        for (r = 0; r < h / 6 - 1; r++) for (c = 0; c < 4; c++)
+            if (wf_spec[(i + r + c) % 19] > 7 && ((i * 7 + r * 3 + c) % 5) < 3) WFR(x + 2 + c * 4, t + 4 + r * 6, 2, 3, (i + r) % 3 == 0 ? RGB(0xff, 0x60, 0xd0) : (i + r) % 3 == 1 ? RGB(0x60, 0xf0, 0xff) : RGB(0xff, 0xe0, 0x80));
+    }
+    for (i = 0; i < 6; i++) {                                          /* the near ones */
+        int32_t x = i * 44 - 10, h = 50 + (int32_t)(((uint32_t)i * 53u) % 40u), t = 182 - h;
+        WFR(x, t, 34, h, RGB(0x06, 0x12, 0x1e));
+        for (r = 0; r < h / 7 - 1; r++) for (c = 0; c < 6; c++) if (((i * 11 + r * 5 + c * 3 + (int32_t)(wv_ph / 20u)) % 7) < 2) WFR(x + 3 + c * 5, t + 4 + r * 7, 3, 3, RGB(0xff, 0xd8, 0x70));
+    }
+    WFR(0, 182, 240, 58, RGB(0x08, 0x0a, 0x10));
+    for (i = 0; i < 8; i++) { wvf_disk(14 + i * 30, 178, 5, RGB(0x14, 0x40, 0x28)); wvf_disk(14 + i * 30, 178, 2, RGB(0x80, 0xff, 0xa0)); }
+    if (neo_bike > -1000) {                                            /* the bike and its trail */
+        int32_t x = neo_bike, y = 206;
+        for (i = 0; i < 3; i++) WFR(x - 140, y - 3 + i * 2, 140, 2, i == 1 ? RGB(0xff, 0x70, 0x40) : RGB(0xd0, 0x20, 0x18));
+        for (i = 0; i < 40; i++) cv_pset(x - 140 - i * 3, y - 1, RGB(0x80, 0x10, 0x10));
+        wvf_disk(x, y, 9, RGB(0xd0, 0x18, 0x18)), wvf_disk(x - 12, y + 4, 6, RGB(0x20, 0x08, 0x08)), wvf_disk(x + 10, y + 4, 6, RGB(0x20, 0x08, 0x08));
+        wvf_disk(x + 12, y - 4, 3, RGB(0xff, 0xf0, 0x80));
+    }
+}
+/* TARGET: a sight in hexagons (after the "global target" one): yellow and blue frames, a red one whose edge is the spectrum, a magenta box
+ * turning round a blue geodesic ball, three red arms; the tempo in the corner */
+static UI_NOINLINE void ne_hexagon(int32_t cx, int32_t cy, int32_t r, uint16_t col, int dash, int spec)
+{
+    int32_t k, j;
+    for (k = 0; k < 6; k++) {
+        uint32_t a0 = (uint32_t)k * 256u / 6u, a1 = (uint32_t)(k + 1) * 256u / 6u;
+        int32_t x0 = cx + r * wv_sin4(a0 + 64u) / 127, y0 = cy + r * wv_sin4(a0) / 127, x1 = cx + r * wv_sin4(a1 + 64u) / 127, y1 = cy + r * wv_sin4(a1) / 127;
+        if (!dash && !spec) { ne_line(x0, y0, x1, y1, col); continue; }
+        for (j = 0; j < 20; j++) {
+            int32_t ax = x0 + (x1 - x0) * j / 20, ay = y0 + (y1 - y0) * j / 20, bx = x0 + (x1 - x0) * (j + 1) / 20, by = y0 + (y1 - y0) * (j + 1) / 20;
+            if (dash && !(j & 1)) wvf_pline(ax, ay, bx, by, col);
+            if (spec) { int32_t l = 2 + wf_spec[(k * 20 + j) % 19] / 2; wvf_pline(ax, ay, ax + (ax - cx) * l / r, ay + (ay - cy) * l / r, col); }
+        }
+    }
+}
+static UI_NOINLINE void ne_target(void)
+{
+    static const int8_t V[8][3] = {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}};
+    static const uint8_t E[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    int32_t i, px[8], py[8], cx = 120, cy = 124;
+    uint32_t a = wv_ph * 2u;
+    int32_t c = wv_sin4(a + 64u), sn = wv_sin4(a);
+    char b[20];
+    WFR(0, 0, 240, 240, RGB(0x1c, 0x10, 0x18));
+    ne_hexagon(cx + 6, cy + 8, 100, RGB(0x40, 0x40, 0xd0), 0, 0);
+    ne_hexagon(cx, cy, 98, RGB(0xf0, 0xc8, 0x30), 1, 0);
+    ne_hexagon(cx - 2, cy, 86, RGB(0xff, 0x30, 0x20), 0, 1);
+    for (i = 0; i < 8; i++) {
+        int32_t x = V[i][0] * c - V[i][2] * sn, z = V[i][0] * sn + V[i][2] * c, y = V[i][1] * 127, y2 = (y * 110 - z * 60) / 127, z2 = (y * 60 + z * 110) / 127;
+        px[i] = cx + x * 52 / (127 + z2 / 5), py[i] = cy + y2 * 52 / (127 + z2 / 5);
+    }
+    for (i = 0; i < 12; i++) wvf_pline(px[E[i][0]], py[E[i][0]], px[E[i][1]], py[E[i][1]], RGB(0xe0, 0x40, 0xd0));
+    ne_ring(cx, cy, 30 + wv_bass() / 8, RGB(0x40, 0x50, 0xf0));
+    for (i = 0; i < 8; i++) {                                          /* the ball's triangles */
+        uint32_t a0 = (uint32_t)i * 32u + a / 2u;
+        wvf_pline(cx + 30 * wv_sin4(a0 + 64u) / 127, cy + 30 * wv_sin4(a0) / 127, cx + 14 * wv_sin4(a0 + 80u) / 127, cy + 14 * wv_sin4(a0 + 16u) / 127, RGB(0x40, 0x50, 0xf0));
+        wvf_pline(cx + 14 * wv_sin4(a0 + 80u) / 127, cy + 14 * wv_sin4(a0 + 16u) / 127, cx + 30 * wv_sin4(a0 + 96u) / 127, cy + 30 * wv_sin4(a0 + 32u) / 127, RGB(0x40, 0x50, 0xf0));
+    }
+    for (i = 0; i < 3; i++) {                                          /* the three arms */
+        uint32_t an = a + (uint32_t)i * 85u;
+        int32_t ex = cx + 34 * wv_sin4(an + 64u) / 127, ey = cy + 34 * wv_sin4(an) / 127;
+        ne_line(cx, cy, ex, ey, RGB(0xff, 0x30, 0x20)), ne_line(cx + 3, cy + 2, ex + 3, ey + 2, RGB(0xc0, 0x20, 0x10));
+    }
+    wf_textc(120, 8, 1, "I GLOBAL TARGET I", RGB(0xf0, 0xc8, 0x30));
+    str_cpy(b, "X ", 20), fmt_int(b + 2, song.g[G_BPM]), str_cpy(b + str_len(b), ".20272", 20 - str_len(b));
+    wf_text(70, 224, 1, b, RGB(0xf0, 0xc8, 0x30));
+    wf_text(196, 60, 1, "WFM", RGB(0xf0, 0xc8, 0x30)), wf_text(196, 70, 1, "V0.12", RGB(0xf0, 0xc8, 0x30));
+}
+/* the DANCE's strokes: the few signs its people are made of, drawn (the 5 x 7 face has no brackets nor backslash) */
+static UI_NOINLINE void dn_char(int32_t x, int32_t y, int32_t z, char ch, uint16_t col)   /* z: 4 = 8 x 12 */
+{
+#define DQ(v) ((v) * z / 4)
+    switch (ch) {
+    case 'O': wvf_disk(x + DQ(4), y + DQ(6), DQ(5), col); wvf_disk(x + DQ(4), y + DQ(6), DQ(5) - 3, C_BLACK); break;
+    case '/': ne_line3(x + DQ(7), y, x, y + DQ(12), col); break;
+    case '\\': ne_line3(x, y, x + DQ(7), y + DQ(12), col); break;
+    case 'I': ne_line3(x + DQ(4), y, x + DQ(4), y + DQ(12), col); break;
+    case '(': ne_line3(x + DQ(6), y, x + DQ(2), y + DQ(6), col), ne_line3(x + DQ(2), y + DQ(6), x + DQ(6), y + DQ(12), col); break;
+    case ')': ne_line3(x + DQ(2), y, x + DQ(6), y + DQ(6), col), ne_line3(x + DQ(6), y + DQ(6), x + DQ(2), y + DQ(12), col); break;
+    case '<': ne_line3(x + DQ(7), y + DQ(2), x + DQ(1), y + DQ(6), col), ne_line3(x + DQ(1), y + DQ(6), x + DQ(7), y + DQ(10), col); break;
+    case '>': ne_line3(x + DQ(1), y + DQ(2), x + DQ(7), y + DQ(6), col), ne_line3(x + DQ(7), y + DQ(6), x + DQ(1), y + DQ(10), col); break;
+    case '-': ne_line3(x, y + DQ(6), x + DQ(8), y + DQ(6), col); break;
+    case 'V': ne_line3(x, y, x + DQ(4), y + DQ(12), col), ne_line3(x + DQ(4), y + DQ(12), x + DQ(8), y, col); break;
+    case 'X': ne_line3(x, y, x + DQ(8), y + DQ(12), col), ne_line3(x + DQ(8), y, x, y + DQ(12), col); break;
+    case '7': ne_line3(x, y, x + DQ(7), y, col), ne_line3(x + DQ(7), y, x + DQ(3), y + DQ(12), col); break;
+    case '*': ne_line3(x + DQ(4), y + DQ(1), x + DQ(4), y + DQ(11), col), ne_line3(x, y + DQ(6), x + DQ(8), y + DQ(6), col),
+              ne_line(x + DQ(1), y + DQ(3), x + DQ(7), y + DQ(9), col), ne_line(x + DQ(7), y + DQ(3), x + DQ(1), y + DQ(9), col); break;   /* (a clap) */
+    default: break;
+    }
+#undef DQ
+}
+/* RACER: an 8-bit night drive (after the racing-game ones): the road in pseudo-3D, its dashes running at the tempo, bending with the
+ * melody; a city of dotted windows and a full moon ahead; posts going by; our red car from behind, its tail lights on the kick; and the
+ * game's purple dashboard with the device's numbers (TIME the play time, KM/H the tempo, SCORE the notes, the rev bar the level, S..G the loop) */
+static int32_t rc_curve, rc_phase, rc_score, rc_rival = -1;
+static const char *const RC_CAR[12] = {"....111111111111....", "...12222222222221...", "..1222222222222221..", ".111111111111111111.",
+                                       "11333311111111333311", "13444431111113444431", "13444431111113444431", "11333311111111333311",
+                                       "11111111111111111111", ".55.............55..", ".55.............55..", "...................."};
+static UI_NOINLINE void rc_step(void)
+{
+    int32_t hi = 0, lo = 0, i;
+    for (i = 0; i < 9; i++) lo += wf_spec[i];
+    for (i = 10; i < 19; i++) hi += wf_spec[i];
+    rc_curve += (clamp((hi - lo) / 3, -40, 40) - rc_curve) / 8;
+    rc_phase += 2 + clamp(song.g[G_BPM], 40, 240) / 30;
+    rc_score += wv_all() / 20;
+    wvf_hits();
+    if (wvf_hit_n == 5 && rc_rival < 0) rc_rival = 0;
+    if (rc_rival >= 0 && ++rc_rival > 60) rc_rival = -1;
+}
+static UI_NOINLINE void ne_racer(void)
+{
+    int32_t y, i, yh = 124, cxh = 120 + rc_curve;
+    char b[16];
+    wvf_disk(150, 54, 15, RGB(0xe8, 0xe8, 0xe8));                     /* the moon */
+    for (i = 0; i < 9; i++) cv_pset(142 + (int32_t)(((uint32_t)i * 7u) % 18u), 46 + (int32_t)(((uint32_t)i * 5u) % 16u), RGB(0xb0, 0xb0, 0xb0)), cv_pset(143 + (int32_t)(((uint32_t)i * 7u) % 18u), 47 + (int32_t)(((uint32_t)i * 5u) % 16u), RGB(0xb0, 0xb0, 0xb0));
+    for (i = 0; i < 30; i++) {                                         /* the city: towers of dotted windows */
+        int32_t x = i * 8 + (i * 13) % 5 - 4 + rc_curve / 4, h = 12 + (int32_t)(((uint32_t)i * 53u) % 30u) + (i == 7 ? 26 : 0), r, c;
+        if (i == 13 || i == 14 || i == 15) continue;
+        for (r = 0; r < h; r += 3) for (c = 0; c < 6; c += 2)
+            if (((i * 7 + r + c * 3 + (int32_t)(wv_ph / 8u)) % 5) < 3 || wf_spec[(i + r) % 19] > 10)
+                WFR(x + c, yh - 4 - h + r, 1, 2, (r / 3 + i) % 4 == 0 ? RGB(0xf8, 0xd8, 0x90) : (r / 3 + i) % 4 == 1 ? RGB(0xf0, 0xf0, 0xf0) : RGB(0x40, 0x40, 0xd8));
+    }
+    for (i = 0; i < 30; i++) WFR(i * 8 + 2, yh - 3, 3, 2, (i % 3) ? RGB(0x40, 0x40, 0xd8) : RGB(0xf8, 0xd0, 0x80));
+    for (y = yh; y < 192; y++) {                                       /* the road, row by row */
+        int32_t d = y - yh, z = 4000 / (d + 2), w = d * 7 / 4 + 4, cx = cxh - rc_curve * d * d / 4600, dash = ((z + rc_phase) / 18) & 1;
+        if (dash) {
+            int32_t dw = 1 + d / 14;
+            WFR(cx - dw / 2, y, dw, 1, RGB(0xf8, 0xd8, 0x60));
+            WFR(cx - w * 2 / 3 - dw / 2, y, dw, 1, RGB(0xf8, 0x90, 0x30)), WFR(cx + w * 2 / 3 - dw / 2, y, dw, 1, RGB(0xf8, 0x90, 0x30));
+            WFR(cx - w - 2 - d / 4, y, 2 + d / 6, 1, RGB(0xf8, 0x90, 0x30)), WFR(cx + w + 2, y, 2 + d / 6, 1, RGB(0xf8, 0x90, 0x30));
+        }
+        if (((z + rc_phase) % 220) < 4 && d > 6) {                     /* a post going by */
+            int32_t px = cx - w - 14 - d / 3, ph = d / 2 + 6;
+            WFR(px, y - ph, 2, ph, RGB(0x60, 0xe8, 0xc0)), WFR(px, y - ph, 6 + d / 10, 2, RGB(0x60, 0xe8, 0xc0));
+        }
+    }
+    if (rc_rival >= 0) {                                               /* a car ahead, coming nearer then gone */
+        int32_t d = 4 + rc_rival, y = yh + d, cx = cxh - rc_curve * d * d / 4600 + d / 2, s = 2 + d / 8;
+        WFR(cx - s * 2, y - s, s * 4, s, RGB(0x30, 0xd0, 0x60)), WFR(cx - s * 2, y, s, s / 2 + 1, RGB(0xf0, 0xf0, 0xf0)), WFR(cx + s, y, s, s / 2 + 1, RGB(0xf0, 0xf0, 0xf0));
+    }
+    {                                                                  /* our car */
+        int32_t r, c, x0 = 100 - rc_curve / 3, y0 = 162 + (int32_t)((wv_ph / 2u) & 1u);
+        for (r = 0; r < 12; r++) for (c = 0; c < 20; c++) {
+            char ch = RC_CAR[r][c];
+            uint16_t col = ch == '1' ? RGB(0xd8, 0x20, 0x20) : ch == '2' ? RGB(0x20, 0x08, 0x08) : ch == '3' ? RGB(0x60, 0x08, 0x08) : ch == '4' ? (wvf_hit_n ? RGB(0xff, 0xff, 0xc0) : RGB(0xff, 0x60, 0x40)) : ch == '5' ? RGB(0x18, 0x18, 0x18) : 0;
+            if (ch != '.') WFR(x0 + c * 2, y0 + r * 2, 2, 2, col);
+        }
+    }
+    WFR(0, 192, 240, 48, RGB(0x50, 0x18, 0xc0));                       /* the dashboard */
+    WFR(0, 192, 240, 2, RGB(0x90, 0x60, 0xf0)), WFR(0, 236, 240, 4, RGB(0x30, 0x0c, 0x80));
+    for (i = 0; i < 16; i++) WFR(72 + i * 6, 196, 5, 4, i < clamp(wv_all() / 14, 0, 16) ? (i < 10 ? RGB(0x40, 0xe0, 0x40) : i < 13 ? RGB(0xf0, 0xf0, 0xf0) : RGB(0xf0, 0x30, 0x30)) : RGB(0x30, 0x10, 0x70));
+    WFR(8, 204, 44, 12, C_BLACK), wf_textc(30, 207, 1, "TIME", RGB(0x60, 0xf0, 0x90));
+    WFR(80, 204, 80, 12, C_BLACK), fmt_int(b, song.g[G_BPM] * 2), str_cpy(b + str_len(b), " KM/H", 16 - str_len(b)), wf_textc(120, 207, 1, b, RGB(0x60, 0xf0, 0x90));
+    WFR(184, 204, 50, 12, C_BLACK), wf_textc(209, 207, 1, "SCORE", RGB(0x60, 0xf0, 0x90));
+    WFR(8, 220, 44, 12, C_BLACK), fmt_int(b, (int32_t)(wf_secs() % 1000u)), wf_textc(30, 223, 1, b, RGB(0x60, 0xf0, 0x90));
+    WFR(64, 220, 112, 12, C_BLACK), wf_text(70, 223, 1, "S", RGB(0x60, 0xf0, 0x90)), wf_text(166, 223, 1, "G", RGB(0x60, 0xf0, 0x90));
+    {
+        int32_t n = song.playing ? (int32_t)(TSEL->seq_idx % trk_len(TSEL)) * 12 / (int32_t)trk_len(TSEL) + 1 : 0;
+        for (i = 0; i < 12; i++) { int32_t ax = 80 + i * 7; uint16_t cc = i < n ? RGB(0x60, 0xf0, 0x90) : RGB(0x30, 0x10, 0x70); WFR(ax, 224, 2, 5, cc), WFR(ax + 2, 225, 2, 3, cc), WFR(ax + 4, 226, 1, 1, cc); }
+    }
+    WFR(184, 220, 50, 12, C_BLACK), fmt_int(b, rc_score % 100000), wf_textc(209, 223, 1, b, RGB(0x60, 0xf0, 0x90));
+}
+/* ROOM: someone standing in a dark room whose walls are data (after the installation reference): white strips and dashes run along the
+ * back wall, each row at its speed, denser and brighter where its band sounds; the floor mirrors them in perspective */
+static UI_NOINLINE void ne_room(void)
+{
+    int32_t r, k;
+    for (r = 0; r < 34; r++) {                                         /* the wall */
+        int32_t y = 30 + r * 3, band = r % 19, n = 2 + wf_spec[band] / 3, sp = 1 + (r * 7) % 5;
+        uint16_t col = wf_spec[band] > 10 ? WC_WHT : RGB(0x90, 0x90, 0x98);
+        for (k = 0; k < n; k++) {
+            int32_t len = 2 + (int32_t)(((uint32_t)(r * 31 + k * 17)) % 24u), x = (int32_t)(((uint32_t)(r * 53 + k * 89) + wv_ph * (uint32_t)sp) % 260u) - 10;
+            WFR(x, y, len, 1 + (k & 1), col);
+        }
+    }
+    for (r = 0; r < 26; r++) {                                         /* the floor: the same, squeezed, darker */
+        int32_t y = 134 + r * r / 6 + r, band = (33 - r) % 19, n = 1 + wf_spec[band] / 4;
+        for (k = 0; k < n; k++) {
+            int32_t len = (2 + (int32_t)(((uint32_t)(r * 29 + k * 13)) % 30u)) * (r + 4) / 10, x = (int32_t)(((uint32_t)(r * 61 + k * 97) + wv_ph * (uint32_t)(2 + r / 4)) % 280u) - 20;
+            WFR(x, y, len, 1 + r / 9, wf_spec[band] > 10 ? RGB(0xc0, 0xc0, 0xc8) : RGB(0x50, 0x50, 0x58));
+        }
+    }
+    WFR(0, 133, 240, 1, RGB(0x30, 0x30, 0x34));
+    {                                                                  /* a light under the feet, bent by what runs past */
+        int32_t r, w2 = 16 + (int32_t)sp_s[3] / 2 + WV_SIN[(wv_ph * 2u) & 63u] / 40, l;
+        for (r = 0; r < 6; r++) { l = 0x50 - r * 10 + (int32_t)sp_s[(uint32_t)r * 3u] * 2; WFR(120 - w2 + r * 2 + WV_SIN[(wv_ph * 3u + (uint32_t)r * 9u) & 63u] / 50, 140 + r, 2 * (w2 - r * 2), 1, RGB(l, l, l + 8)); }
+    }
+    wvf_disk(120, 98, 6, RGB(0x46, 0x46, 0x52)), WFR(112, 103, 16, 24, RGB(0x46, 0x46, 0x52)), WFR(114, 125, 12, 18, RGB(0x46, 0x46, 0x52));   /* (a faint rim: the figure reads on the dark) */
+    WFR(110, 105, 20, 18, RGB(0x46, 0x46, 0x52));
+    wvf_disk(120, 98, 5, RGB(0x06, 0x06, 0x08));
+    WFR(113, 104, 14, 22, RGB(0x06, 0x06, 0x08)), WFR(115, 126, 4, 16, RGB(0x06, 0x06, 0x08)), WFR(121, 126, 4, 16, RGB(0x06, 0x06, 0x08));
+    WFR(111, 106, 3, 16, RGB(0x06, 0x06, 0x08)), WFR(126, 106, 3, 16, RGB(0x06, 0x06, 0x08));
+    WFR(112, 142, 18, 8, RGB(0x10, 0x10, 0x14));
+}
+/* SUNSET: RACER's second road: a striped sunset, purple mountains, pines going by, the purple tarmac, and the green dashboard (the loops
+ * as LAP times, MPH the tempo, POWER the level) */
+static UI_NOINLINE void ne_sunset(void)
+{
+    static const uint16_t SKY[8] = {RGB(0x30, 0x10, 0x60), RGB(0x50, 0x18, 0x80), RGB(0x80, 0x20, 0x90), RGB(0xb0, 0x30, 0x90), RGB(0xe0, 0x50, 0x80),
+                                    RGB(0xf0, 0x70, 0x70), RGB(0xf8, 0x90, 0x60), RGB(0xf8, 0xa8, 0x70)};
+    int32_t y, i, yh = 120, cxh = 120 + rc_curve;
+    char b[16];
+    for (y = 0; y < 100; y++) WFR(0, y, 240, 1, ((y / 3) & 1) && y % 12 < 9 ? SKY[y * 8 / 100] : SKY[y * 8 / 100 > 0 ? y * 8 / 100 - 1 : 0]);
+    for (i = 0; i < 240; i += 2) {                                     /* mountains */
+        int32_t h = 10 + (WV_SIN[((uint32_t)i / 3u + 5u) & 63u] + WV_SIN[((uint32_t)i + 20u) & 63u]) / 20 + (i % 37 < 4 ? 3 : 0);
+        WFR(i, 100 - h + 4, 2, h + 2, RGB(0x20, 0x08, 0x40)), WFR(i, 100 - h + 4, 2, 2, RGB(0xa0, 0x40, 0xd0));
+    }
+    WFR(0, 104, 240, 16, RGB(0x30, 0x20, 0x90));
+    for (i = 0; i < 6; i++) WFR(0, 106 + i * 2, 240, 1, RGB(0x50, 0x40, 0xc0));
+    for (y = yh; y < 186; y++) {
+        int32_t d = y - yh, z = 4000 / (d + 2), w = d * 2 + 6, cx = cxh - rc_curve * d * d / 4600;
+        WFR(cx - w, y, 2 * w, 1, RGB(0x70, 0x30, 0xe0));
+        if (((z + rc_phase) / 18) & 1) { int32_t dw = 1 + d / 12; WFR(cx - w / 3 - dw / 2, y, dw, 1, WC_WHT), WFR(cx + w / 3 - dw / 2, y, dw, 1, WC_WHT); }
+        if (((z + rc_phase) % 260) < 4 && d > 6) {                     /* a pine going by */
+            int32_t px = cx - w - 10 - d / 4, ph = d / 2 + 10, k;
+            WFR(px, y - ph / 4, 2, ph / 4, RGB(0x40, 0x20, 0x10));
+            for (k = 0; k < ph; k += 2) WFR(px + 1 - k / 4, y - ph / 4 - ph + k, k / 2 + 1, 2, RGB(0x10, 0x40, 0x20));
+        }
+    }
+    {
+        int32_t r, c, x0 = 100 - rc_curve / 3, y0 = 156 + (int32_t)((wv_ph / 2u) & 1u);
+        for (r = 0; r < 12; r++) for (c = 0; c < 20; c++) {
+            char ch = RC_CAR[r][c];
+            uint16_t col = ch == '1' ? RGB(0xc8, 0x40, 0x20) : ch == '2' ? RGB(0x20, 0x08, 0x08) : ch == '3' ? RGB(0x60, 0x18, 0x08) : ch == '4' ? (wvf_hit_n ? RGB(0xff, 0xff, 0xc0) : RGB(0xff, 0x70, 0x40)) : ch == '5' ? RGB(0x18, 0x18, 0x18) : 0;
+            if (ch != '.') WFR(x0 + c * 2, y0 + r * 2, 2, 2, col);
+        }
+        if (wvf_hit_n) { wvf_disk(x0 + 6, y0 + 26, 3, RGB(0xf0, 0xb0, 0xc0)), wvf_disk(x0 + 32, y0 + 26, 3, RGB(0xf0, 0xb0, 0xc0)); }
+    }
+    WFR(0, 186, 240, 54, RGB(0x08, 0x14, 0x10)), ne_line(0, 188, 240, 188, RGB(0x40, 0xc0, 0x80));
+    for (i = 0; i < 3; i++) {                                          /* LAP 1..3: the loop's time in turns */
+        uint32_t t = song.playing ? (fm1_ms - wf_t0) / 100u + (uint32_t)i * 37u : 0u;
+        str_cpy(b, "LAP", 16), fmt_int(b + 3, i + 1), str_cpy(b + str_len(b), " ", 16 - str_len(b)), fmt_int(b + str_len(b), (int32_t)(t / 600u % 10u));
+        str_cpy(b + str_len(b), "'", 16 - str_len(b)), fmt_int(b + str_len(b), (int32_t)(t / 10u % 60u));
+        wf_text(10, 196 + i * 12, 1, b, RGB(0xb0, 0xf0, 0xb0));
+    }
+    fmt_int(b, song.g[G_BPM] * 2), wf_text(150, 198, 1, b, RGB(0x60, 0xf0, 0x90)), wf_text(178, 198, 1, "MPH", RGB(0x60, 0xf0, 0x90));
+    ne_line(128, 206, 128, 196, RGB(0x60, 0xf0, 0x90)), ne_line(124, 200, 128, 196, RGB(0x60, 0xf0, 0x90)), ne_line(132, 200, 128, 196, RGB(0x60, 0xf0, 0x90));
+    for (i = 0; i < 14; i++) WFR(118 + i * 6, 214, 4, 3, i < clamp(wv_all() / 16, 0, 14) ? RGB(0x60, 0xf0, 0x90) : RGB(0x18, 0x40, 0x28));
+    for (i = 0; i < 8; i++) WFR(214, 228 - i * 5, 18, 3, i < clamp(wv_all() / 30, 0, 8) ? RGB(0x60, 0xf0, 0x90) : RGB(0x18, 0x40, 0x28));
+    wf_text(208, 232, 0, "POWER", RGB(0x60, 0xf0, 0x90));
+}
+/* FALL: someone falling, tumbling, between towers in a pink haze (after the falling reference): three layers of towers rush up past
+ * (faster with the sound), the near ones dark, the far ones lost in the haze */
+static uint32_t fall_y;
+static UI_NOINLINE void ne_fall(void)
+{
+    int32_t i, y, L;
+    uint32_t a = fall_y * 2u;
+    for (y = 0; y < 240; y += 4) WFR(0, y, 240, 4, RGB(0xf0 - y / 3, 0x70 - y / 6, 0x60 + y / 8));
+    for (L = 0; L < 3; L++) {
+        static const uint16_t TC[3] = {RGB(0xc0, 0x60, 0x90), RGB(0x80, 0x30, 0x80), RGB(0x30, 0x10, 0x40)};
+        static const uint16_t WC2[3] = {RGB(0xe0, 0x90, 0xb0), RGB(0xb0, 0x70, 0xd0), RGB(0x70, 0x60, 0xd0)};
+        int32_t n = L == 2 ? 2 : 3, sp = 1 + L * 2;
+        for (i = 0; i < n; i++) {
+            int32_t w = 14 + L * 14, x = L == 2 ? (i ? 240 - w + 6 : -6) : (i * 240 / n + L * 37 + 20) % 240 - 10, r;
+            WFR(x, 0, w, 240, TC[L]);
+            for (r = 0; r < 30; r++) {
+                int32_t wy = (r * 10 - (int32_t)((fall_y * (uint32_t)sp) % 10u) - 0);
+                int32_t c;
+                for (c = 0; c < w / 5; c++) if (((r + c + i + (int32_t)((fall_y * (uint32_t)sp) / 10u)) % 4) && wf_spec[(r + c) % 19] > 4) WFR(x + 2 + c * 5, wy, 3, 4, WC2[L]);
+            }
+        }
+    }
+    {                                                                  /* the one falling, turning */
+        int32_t cx = 120 + WV_SIN[(wv_ph) & 63u] * 14 / 127, cy = 104 + WV_SIN[(wv_ph * 2u + 9u) & 63u] * 6 / 127;
+        int32_t c = wv_sin4(a + 64u), s2 = wv_sin4(a);
+        uint16_t k = RGB(0x20, 0x10, 0x40);
+        ne_line3(cx - 8 * c / 127, cy - 8 * s2 / 127, cx + 8 * c / 127, cy + 8 * s2 / 127, k);
+        wvf_disk(cx - 12 * c / 127, cy - 12 * s2 / 127, 4, k);
+        ne_line3(cx + 8 * c / 127, cy + 8 * s2 / 127, cx + 16 * c / 127 - 6 * s2 / 127, cy + 16 * s2 / 127 + 6 * c / 127, k), ne_line3(cx + 8 * c / 127, cy + 8 * s2 / 127, cx + 16 * c / 127 + 5 * s2 / 127, cy + 16 * s2 / 127 - 5 * c / 127, k);
+        ne_line3(cx - 4 * c / 127, cy - 4 * s2 / 127, cx - 4 * c / 127 + 10 * s2 / 127, cy - 4 * s2 / 127 - 10 * c / 127, k), ne_line3(cx - 4 * c / 127, cy - 4 * s2 / 127, cx - 4 * c / 127 - 9 * s2 / 127, cy - 4 * s2 / 127 + 9 * c / 127, k);
+    }
+}
+/* FLOAT: two people hand in hand, floating in a burst of blue light that rushes out from behind them (after the dreamlike one) */
+static UI_NOINLINE void ne_float(void)
+{
+    static int32_t fph, frot;
+    int32_t i, k;
+    fph += 2 + clamp(ev_lvl / 50, 0, 5), frot += 1;                   /* (a phase that only ever creeps forward: no jumps) */
+    WFR(0, 0, 240, 240, RGB(0x08, 0x10, 0x30));
+    wvf_disk(120, 120, 90, RGB(0x10, 0x20, 0x58)), wvf_disk(120, 120, 56, RGB(0x20, 0x38, 0x90)), wvf_disk(120, 120, 28, RGB(0x50, 0x70, 0xd0));
+    for (i = 0; i < 90; i++) {                                         /* the burst: specks rushing out */
+        uint32_t an = (uint32_t)i * 97u + (uint32_t)(frot / 3);
+        int32_t d0 = (int32_t)(((uint32_t)i * 53u + (uint32_t)fph) % 130u), d1 = d0 + 4 + d0 / 8;
+        uint16_t col = i % 3 == 0 ? WC_WHT : i % 3 == 1 ? RGB(0x90, 0xb0, 0xff) : RGB(0x40, 0x70, 0xf0);
+        wvf_pline(120 + d0 * wv_sin4(an + 64u) / 127, 120 + d0 * wv_sin4(an) / 127, 120 + d1 * wv_sin4(an + 64u) / 127, 120 + d1 * wv_sin4(an) / 127, col);
+    }
+    for (k = 0; k < 2; k++) {                                          /* the two, hand in hand */
+        int32_t sw = 20 + clamp(ev_lvl / 12, 0, 14), x = 120 + (k ? sw : -sw) * WV_SIN[((uint32_t)frot / 2u + 16u) & 63u] / 127, y = 110 + WV_SIN[(wv_ph + (uint32_t)k * 20u) & 63u] * 6 / 127 + (k ? -1 : 1) * WV_SIN[(wv_ph / 2u) & 63u] / 20;
+        uint16_t c = RGB(0x08, 0x0c, 0x24);
+        wvf_disk(x, y - 28, 6, c);
+        WFR(x - 6, y - 21, 12, 24, c);
+        ne_line(x - 3, y + 3, x - 6 + k * 2, y + 30, c), ne_line(x + 3, y + 3, x + 6 + k * 2, y + 28, c);
+        ne_line(k ? x - 6 : x + 6, y - 18, 120, y - 6, c);
+        ne_line(k ? x + 6 : x - 6, y - 18, k ? x + 16 : x - 16, y - 2, c);
+        if (!k) WFR(x - 8, y - 4, 16, 10, c);
+    }
+}
+/* NIGHTRUN: behind a big car on a wet road at night (after the neon drive): a red sun on the horizon, towers glittering both sides,
+ * reflections on the road, rain; the tail lights flare on the kick */
+static UI_NOINLINE void ne_nightrun(void)
+{
+    int32_t i, y, x, r;
+    for (y = 0; y < 120; y += 4) WFR(0, y, 240, 4, RGB(0x30 + y / 4, 0x50 + y / 4, 0x80 + y / 5));
+    wvf_disk(150, 112, 22, RGB(0xd0, 0x30, 0x40)), wvf_disk(150, 112, 18, RGB(0xff, 0x40, 0x30));
+    for (i = 0; i < 2; i++) for (r = 0; r < 4; r++) {                  /* the towers, both sides */
+        int32_t bx = i ? 160 + r * 20 : r * 22, bw = 18, top = 10 + (r * 23) % 40;
+        WFR(bx, top, bw, 120 - top, RGB(0x40, 0x40, 0x80));
+        for (y = top + 2; y < 118; y += 3) for (x = bx + 1; x < bx + bw - 1; x += 3)
+            if (((x * 7 + y * 13 + (int32_t)wv_ph) % 5) < 2 || wf_spec[(x + y) % 19] > 11) WFR(x, y, 2, 2, ((x + y) % 3) ? RGB(0xd0, 0xd8, 0xff) : RGB(0xff, 0x80, 0xc0));
+    }
+    WFR(0, 120, 240, 120, RGB(0x18, 0x20, 0x40));                    /* the wet road: the sun and the windows mirrored */
+    for (y = 122; y < 240; y += 2) WFR(140 + (int32_t)(((uint32_t)y * 7u + wv_ph * 3u) % 9u) - 4, y, 20 - (y - 120) / 10, 1, RGB(0xc0, 0x30, 0x30));
+    for (i = 0; i < 40; i++) WFR((int32_t)(((uint32_t)i * 37u) % 240u), 124 + (int32_t)(((uint32_t)i * 53u + wv_ph) % 100u), 3, 1, RGB(0x80, 0x90, 0xd0));
+    for (i = 0; i < 30; i++) { x = (int32_t)(((uint32_t)i * 41u + wv_ph * 5u) % 260u) - 10; y = (int32_t)(((uint32_t)i * 67u + wv_ph * 9u) % 240u); wvf_pline(x, y, x - 3, y + 8, RGB(0x90, 0xa0, 0xd0)); }
+    {                                                                  /* the car */
+        int32_t gl = wvf_hit_n ? 1 : 0;
+        WFR(48, 150, 144, 60, RGB(0x10, 0x10, 0x18)), WFR(56, 140, 128, 12, RGB(0x14, 0x14, 0x1c)), WFR(40, 136, 160, 5, RGB(0x08, 0x08, 0x0c));
+        WFR(40, 136, 4, 16, RGB(0x08, 0x08, 0x0c)), WFR(196, 136, 4, 16, RGB(0x08, 0x08, 0x0c));
+        for (i = 0; i < 2; i++) {
+            int32_t lx = i ? 160 : 80;
+            wvf_disk(lx - 10, 170, 8, gl ? RGB(0xff, 0xe0, 0x80) : RGB(0xff, 0x70, 0x30)), wvf_disk(lx - 10, 170, 4, RGB(0x60, 0x10, 0x08));
+            wvf_disk(lx + 8, 170, 8, gl ? RGB(0xff, 0x80, 0x60) : RGB(0xe0, 0x20, 0x20)), wvf_disk(lx + 8, 170, 4, RGB(0x60, 0x10, 0x08));
+        }
+        WFR(108, 196, 8, 6, RGB(0x30, 0x30, 0x38)), WFR(124, 196, 8, 6, RGB(0x30, 0x30, 0x38));
+        WFR(52, 210, 26, 12, RGB(0x06, 0x06, 0x08)), WFR(162, 210, 26, 12, RGB(0x06, 0x06, 0x08));
+    }
+}
+/* ORBIT: driving a highway with a planet filling the horizon (after the space-road one): the road bends, green signs go overhead on the
+ * kick, and the dashboard's four dials are the level, the tempo, the loop, the bass; gloved hands on the wheel */
+static int32_t orb_sign = -1;
+static UI_NOINLINE void ne_orbit(void)
+{
+    int32_t i, y, yh = 120, cxh = 140 + rc_curve;
+    WFR(0, 0, 240, 240, RGB(0x02, 0x04, 0x0c));
+    for (i = 0; i < 30; i++) cv_pset((int32_t)(((uint32_t)i * 71u) % 240u), (int32_t)(((uint32_t)i * 37u) % 90u), RGB(0xc0, 0xc8, 0xe0));
+    wvf_disk(60, 150, 96, RGB(0x10, 0x50, 0x90)), wvf_disk(56, 146, 90, RGB(0x30, 0x90, 0xd0));
+    for (i = 0; i < 40; i++) WFR(10 + (int32_t)(((uint32_t)i * 29u + wv_ph / 4u) % 100u), 70 + (int32_t)(((uint32_t)i * 43u) % 50u), 10, 3, RGB(0xd8, 0xf0, 0xff));
+    for (y = yh; y < 176; y++) {
+        int32_t d = y - yh, z = 4000 / (d + 2), w = d * 2 + 4, cx = cxh - rc_curve * d * d / 4600;
+        WFR(cx - w, y, 2 * w, 1, RGB(0x48, 0x48, 0x50));
+        WFR(cx - w - 4, y, 4, 1, RGB(0xc0, 0xc0, 0xc8)), WFR(cx + w, y, 4, 1, RGB(0xc0, 0xc0, 0xc8));
+        if (((z + rc_phase) / 16) & 1) WFR(cx - 1 - d / 20, y, 2 + d / 10, 1, RGB(0xf0, 0xc0, 0x30));
+    }
+    if (orb_sign >= 0) {                                               /* a sign overhead, coming at us */
+        int32_t s = 6 + orb_sign * 2, sy = 96 - orb_sign;
+        WFR(120 - s * 3, sy, s * 6, s, RGB(0x10, 0x80, 0x40)), WFR(120 - s * 3 + 3, sy + 3, s * 2, 1, WC_WHT), WFR(120 + 3, sy + 3, s * 2, 1, WC_WHT);
+        WFR(120 - s * 3, sy, 2, 120 - sy, RGB(0x80, 0x80, 0x88)), WFR(120 + s * 3, sy, 2, 120 - sy, RGB(0x80, 0x80, 0x88));
+    }
+    WFR(0, 176, 240, 64, RGB(0x10, 0x10, 0x14));                       /* the dashboard */
+    for (i = 0; i < 4; i++) {
+        static const uint8_t SRC[4] = {0, 1, 2, 3};
+        int32_t gx = 34 + i * 58, f = SRC[i] == 0 ? clamp(wv_all() * 3, 0, 1024) : SRC[i] == 1 ? ne_frac(song.g[G_BPM], 40, 240) :
+                                       SRC[i] == 2 ? (song.playing ? (int32_t)(TSEL->seq_idx % trk_len(TSEL)) * 1024 / (int32_t)trk_len(TSEL) : 0) : clamp(wv_bass() * 40, 0, 1024);
+        uint32_t a = 96u + (uint32_t)f * 192u / 1024u;
+        wvf_disk(gx, 200, 17, RGB(0x30, 0x30, 0x38)), wvf_disk(gx, 200, 15, RGB(0x06, 0x06, 0x08));
+        ne_line(gx, 200, gx + 13 * wv_sin4(a + 64u) / 127, 200 + 13 * wv_sin4(a) / 127, RGB(0xff, 0x40, 0x20));
+    }
+    {                                                                  /* the wheel and the gloves */
+        int32_t t = -rc_curve / 4;
+        ne_ring(120, 250, 56, RGB(0x20, 0x20, 0x24)), ne_ring(120, 250, 54, RGB(0x20, 0x20, 0x24));
+        wvf_disk(70 + t, 212 + t / 3, 13, RGB(0xd8, 0xd8, 0xd0)), wvf_disk(170 + t, 212 - t / 3, 13, RGB(0xd8, 0xd8, 0xd0));
+        wvf_disk(70 + t, 216 + t / 3, 8, RGB(0xa0, 0xa0, 0x98)), wvf_disk(170 + t, 216 - t / 3, 8, RGB(0xa0, 0xa0, 0x98));
+    }
+}
+/* DUSK: a city against a huge setting sun (after the last reference): pink sky, the sun swelling with the bass behind the towers, their
+ * windows lit by the bands, two street lamps, a railing in front and the sun's light shivering on the water below it */
+static UI_NOINLINE void ne_dusk(void)
+{
+    int32_t i, y, r, c, R = 34 + wv_bass() / 3;
+    for (y = 0; y < 200; y += 4) WFR(0, y, 240, 4, RGB(0x40 + y * 3 / 4 > 0xf0 ? 0xf0 : 0x40 + y * 3 / 4, 0x20 + y / 4, 0x50 + y / 6));
+    for (i = 0; i < 8; i++) WFR((int32_t)(((uint32_t)i * 61u + wv_ph / 3u) % 280u) - 40, 14 + i * 5, 40 + i * 6, 2, RGB(0x60, 0x30, 0x60));
+    wvf_disk(110, 96, R + 8, RGB(0xff, 0x90, 0x90)), wvf_disk(110, 96, R, RGB(0xff, 0xf0, 0xe0));
+    for (i = 0; i < 11; i++) {                                         /* the towers */
+        int32_t x = i * 23 - 6 + (i == 3 ? 6 : 0), h = 60 + (int32_t)(((uint32_t)i * 47u) % 90u) + (i == 1 || i == 6 ? 50 : 0), t = 196 - h;
+        if (i == 4) { h -= 70; t += 70; }
+        WFR(x, t, 20, h, i & 1 ? RGB(0x50, 0x20, 0x48) : RGB(0x38, 0x14, 0x38));
+        for (r = 0; r < h / 6 - 1; r++) for (c = 0; c < 3; c++) if (((i * 5 + r * 3 + c) % 4) == 0 || wf_spec[(i + r) % 19] > 10) WFR(x + 3 + c * 6, t + 4 + r * 6, 4, 2, RGB(0xff, 0xd0, 0x90));
+    }
+    for (i = 0; i < 8; i++) if (wf_spec[i * 2 + 2] > 7) {                /* birds: one for each band that sounds, crossing the sky */
+        int32_t bx = (int32_t)(((uint32_t)i * 71u + wv_ph * (2u + (uint32_t)i % 3u)) % 280u) - 20, by = 30 + i * 9 + WV_SIN[((uint32_t)i * 9u + wv_ph * 4u) & 63u] / 40, f = (int32_t)((wv_ph / 2u + (uint32_t)i) & 1u);
+        wvf_pline(bx - 4, by - 2 + f * 3, bx, by, RGB(0x20, 0x08, 0x20)), wvf_pline(bx, by, bx + 4, by - 2 + f * 3, RGB(0x20, 0x08, 0x20));
+    }
+    WFR(0, 196, 240, 44, RGB(0x30, 0x14, 0x30));                       /* the water and its light */
+    for (y = 200; y < 240; y += 2) WFR(96 + (int32_t)(((uint32_t)y * 13u + wv_ph * 3u) % 9u) - 4, y, 28 - (y - 200) / 3, 1, RGB(0xff, 0xd0, 0xb0));
+    WFR(0, 200, 240, 2, RGB(0x10, 0x08, 0x14)), WFR(0, 224, 240, 3, RGB(0x10, 0x08, 0x14));
+    for (i = 0; i < 24; i++) WFR(i * 10, 200, 2, 26, RGB(0x10, 0x08, 0x14));
+    for (i = 0; i < 2; i++) {                                          /* the lamps */
+        int32_t lx = i ? 228 : 14;
+        WFR(lx, 70, 3, 160, RGB(0x10, 0x08, 0x14)), WFR(lx - 10, 70, 23, 3, RGB(0x10, 0x08, 0x14));
+        wvf_disk(lx - 8, 78, 6, RGB(0xff, 0xe8, 0xb0)), wvf_disk(lx + 12, 78, 6, RGB(0xff, 0xe8, 0xb0));
+    }
+}
+/* MOTO: riding into a cyberpunk city in the rain (after the motorbike reference): a magenta sky, the city in layers with windows the bands
+ * light and neon signs (one says WFM), two street lamps with halos mirrored on the wet road, the rider from behind with the bolt on the
+ * back, the red tail light pulsing on the kick, leaning with the melody */
+static UI_NOINLINE void ne_moto(void)
+{
+    int32_t i, y, x, r, c, lean = rc_curve / 8;
+    for (y = 0; y < 120; y += 3) WFR(0, y, 240, 3, RGB(0x60 + y / 3, 0x20 + y / 6, 0x70 + y / 4));
+    for (i = 0; i < 6; i++) { int32_t cy = 10 + i * 12; for (x = 0; x < 240; x += 2) if (((x / 2 + i * 7 + (int32_t)(wv_ph / 6u)) % 9) < 4 && ((x + cy) & 2)) WFR(x, cy + WV_SIN[((uint32_t)x / 4u + (uint32_t)i * 11u) & 63u] / 40, 2, 2, RGB(0xc0, 0x50, 0xb0)); }
+    for (i = 0; i < 16; i++) {                                         /* the far city: spires */
+        int32_t bx = i * 15 + (i * 7) % 6, h = 40 + (int32_t)(((uint32_t)i * 41u) % 50u) + (i == 6 ? 40 : 0);
+        WFR(bx, 140 - h, 12, h, RGB(0x50, 0x40, 0x78));
+        if (i == 6) WFR(bx + 5, 140 - h - 16, 2, 16, RGB(0x50, 0x40, 0x78));
+        for (r = 0; r < h / 5; r++) for (c = 0; c < 3; c++) if (((i * 3 + r * 7 + c) % 6) == 0 || wf_spec[(i + r) % 19] > 11) WFR(bx + 2 + c * 3, 142 - h + r * 5, 2, 2, RGB(0xe0, 0xd0, 0xf0));
+    }
+    for (i = 0; i < 6; i++) {                                          /* the near blocks, lit windows */
+        int32_t bx = i * 42 - 8, h = 34 + (int32_t)(((uint32_t)i * 29u) % 30u), t = 150 - h;
+        WFR(bx, t, 36, h, RGB(0x34, 0x2c, 0x58)), WFR(bx, t, 36, 2, RGB(0x70, 0x60, 0xa0));
+        for (r = 0; r < h / 7; r++) for (c = 0; c < 5; c++) if (((i * 5 + r * 3 + c * 2 + (int32_t)(wv_ph / 24u)) % 4) == 0 || wf_spec[(i * 3 + r + c) % 19] > 10) WFR(bx + 3 + c * 7, t + 5 + r * 7, 5, 3, RGB(0xff, 0xe8, 0xa0));
+    }
+    WFR(54, 104, 26, 10, C_BLACK), wf_text(57, 106, 1, "WFM", RGB(0xff, 0x90, 0x20));   /* the neon signs */
+    WFR(226, 70, 3, 18, RGB(0x40, 0xe0, 0xff)), WFR(14, 82, 3, 12, RGB(0x40, 0xe0, 0xff)), WFR(118, 92, 10, 3, (wv_ph / 10u) & 1u ? RGB(0xff, 0x50, 0xc0) : RGB(0x60, 0x20, 0x50));
+    WFR(0, 150, 240, 90, RGB(0x1c, 0x14, 0x30));                       /* the land, the road */
+    for (y = 150; y < 240; y++) { int32_t d = y - 150, w = 10 + d * 13 / 10; WFR(120 - w + lean * d / 90, y, 2 * w, 1, d & 1 ? RGB(0x58, 0x50, 0x70) : RGB(0x5e, 0x56, 0x78)); }
+    for (i = 0; i < 2; i++) {                                          /* the lamps: halos and their light on the road */
+        int32_t lx = i ? 140 : 100, ly = 150;
+        WFR(lx + (i ? 6 : -6), 120, 2, 30, RGB(0x20, 0x18, 0x30));
+        wvf_disk(lx, ly - 30, 12, RGB(0x70, 0x60, 0x98)), wvf_disk(lx, ly - 30, 7, RGB(0xb8, 0xb0, 0xe0)), wvf_disk(lx, ly - 30, 3, WC_WHT);
+        for (y = 0; y < 40; y += 2) WFR(lx - 3 + (i ? y / 4 : -y / 4), 156 + y * 2, 6 - y / 8, 2, RGB(0x90, 0x88, 0xb8));
+    }
+    for (i = 0; i < 46; i++) { x = (int32_t)(((uint32_t)i * 47u + wv_ph * 4u) % 260u) - 10; y = (int32_t)(((uint32_t)i * 71u + wv_ph * 11u) % 240u); wvf_pline(x, y, x - 2, y + 7, RGB(0xa0, 0x90, 0xc8)); }
+    {                                                                  /* the rider */
+        int32_t bx = 120 + lean, by = 196, k = wvf_hit_n;
+        uint16_t dk = RGB(0x10, 0x0c, 0x18), dk2 = RGB(0x1c, 0x16, 0x26);
+        wvf_disk(bx, by - 46, 9, dk2), WFR(bx - 9, by - 46, 18, 4, RGB(0x30, 0x28, 0x40));   /* helmet */
+        WFR(bx - 16, by - 36, 32, 22, dk), wvf_disk(bx - 15, by - 30, 6, dk), wvf_disk(bx + 15, by - 30, 6, dk);
+        WFR(bx - 4, by - 33, 3, 3, RGB(0xff, 0x90, 0x20)), WFR(bx - 1, by - 30, 3, 3, RGB(0xff, 0x90, 0x20)), WFR(bx + 2, by - 27, 3, 3, RGB(0xff, 0x90, 0x20));   /* the bolt */
+        WFR(bx - 12, by - 14, 24, 14, dk), WFR(bx - 6, by, 12, 30, dk2);
+        wvf_disk(bx, by - 8, 6 + k, k ? RGB(0xff, 0x60, 0x80) : RGB(0xc0, 0x20, 0x40)), wvf_disk(bx, by - 8, 2 + k / 2, RGB(0xff, 0xc0, 0xd0));
+        WFR(bx - 26, by - 9, 52, 1, RGB(0xd0, 0x20, 0x40));
+        for (y = 0; y < 20; y += 2) WFR(bx - 2, by + 30 + y, 4, 1, RGB(0x80, 0x18, 0x30));
+    }
+}
+/* DRIVE: inside a car at night (after the pixel-art one): the teal sky dithered through the windscreen, clouds, the moon, the mirror and the
+ * pillar, the road in the headlights, the dashboard with its gauges (speed the tempo, revs the level), the tracks as warning lights, the
+ * clock the play time, a hand on the wheel; and the lights going by (after the train one): the city's along the horizon, lamps sweeping
+ * over the glass and washing the dashboard, a car coming the other way on the kick */
+static int32_t dr_lamp, dr_car = -1;
+static UI_NOINLINE void ne_drive(void)
+{
+    int32_t x, y, i, wash = dr_lamp > 70 ? (dr_lamp - 70) * 3 : 0;
+    uint16_t teal = RGB(0x20 + wash, 0xa8, 0xc0), cyan = RGB(0x30 + wash, 0xc8, 0xe0);
+    char b[8];
+    WFR(0, 0, 240, 240, RGB(0x1c, 0x18, 0x1c));
+    for (y = 36; y < 133; y++) {                                       /* the sky: dithered, darker at the top */
+        int32_t xl = y * 50 / 130 + 2;
+        for (x = xl; x < 236; x += 2) cv_pset(x + (y & 1), y, y < 46 ? RGB(0x1a, 0x30, 0x36) : RGB(0x24, 0x44, 0x4c));
+        WFR(xl, y, 236 - xl, 1, y < 46 ? RGB(0x16, 0x28, 0x2e) : RGB(0x22, 0x40, 0x48));
+        for (x = xl + (y & 1); x < 236; x += 2) cv_pset(x, y, y < 46 ? RGB(0x1a, 0x30, 0x36) : RGB(0x26, 0x46, 0x50));
+    }
+    for (i = 0; i < 7; i++) {                                          /* clouds, drifting */
+        int32_t cx = (int32_t)(((uint32_t)i * 67u + wv_ph / 8u) % 280u) - 20, cy = 44 + i * 11, w = 18 + i * 3;
+        WFR(cx, cy, w, 2, RGB(0x14, 0x22, 0x26)), WFR(cx + 4, cy - 2, w / 2, 2, RGB(0x14, 0x22, 0x26)), WFR(cx - 3, cy + 2, w + 6, 1, RGB(0x14, 0x22, 0x26));
+    }
+    for (i = 0; i < 24; i++) cv_pset(30 + (int32_t)(((uint32_t)i * 71u) % 200u), 50 + (int32_t)(((uint32_t)i * 37u) % 75u), wf_spec[i % 19] > 10 ? WC_WHT : RGB(0x60, 0x90, 0x98));
+    wvf_disk(181, 51, 4, RGB(0xe8, 0xe8, 0xe0));
+    for (i = 0; i < 30; i++) {                                         /* the city's lights along the horizon, going by */
+        x = (int32_t)(((uint32_t)i * 37u + 300u - (wv_ph * 2u) % 300u) % 300u) - 30;
+        if (x > 52) WFR(x, 131 + (i % 3), 1 + (i & 1), 1, i % 4 ? RGB(0xff, 0xb0, 0x60) : RGB(0xe0, 0xe8, 0xff));
+    }
+    WFR(52, 133, 184, 22, RGB(0x20, 0x1c, 0x22));                      /* the road in the headlights */
+    for (y = 136; y < 156; y++) { int32_t d = y - 133, w = d * 5; WFR(150 - w, y, 2 * w, 1, d > 14 ? RGB(0x3c, 0x60, 0x72) : RGB(0x2c, 0x48, 0x56)); }
+    for (i = 0; i < 3; i++) { int32_t d = (int32_t)((wv_ph * 2u + (uint32_t)i * 8u) % 24u); WFR(150 + d / 2, 135 + d, 1 + d / 8, 1 + d / 10, RGB(0xa0, 0xd8, 0xf0)); }
+    if (dr_car >= 0) { int32_t s = 1 + dr_car / 6; WFR(132 - dr_car, 134 + dr_car / 3, s, s, WC_WHT), WFR(138 - dr_car + s * 2, 134 + dr_car / 3, s, s, WC_WHT); }
+    if (dr_lamp > 0) {                                                 /* a lamp coming at us, out over the glass */
+        int32_t p = dr_lamp, lx = 160 + p * p / 60, ly = 132 - p * p / 90, r = 1 + p / 18;
+        if (ly > 30) { wvf_disk(lx, ly, r + 3, RGB(0x60, 0x50, 0x30)), wvf_disk(lx, ly, r, RGB(0xff, 0xd0, 0x80)); WFR(lx - 1, ly, 2, 133 - ly, RGB(0x30, 0x2c, 0x30)); }
+    }
+    WFR(0, 0, 240, 36, RGB(0x1c, 0x18, 0x1c));                          /* the roof, the visors, the mirror */
+    WFR(26, 57, 10, 6, RGB(0x10, 0x0e, 0x12)), WFR(23, 68, 15, 3, RGB(0x10, 0x0e, 0x12)), wvf_disk(57, 82, 7, RGB(0x10, 0x0e, 0x12));
+    WFR(204, 44, 32, 24, cyan), WFR(206, 46, 30, 21, RGB(0x10, 0x0e, 0x12));
+    for (y = 35; y < 166; y++) { int32_t xp = y * 50 / 130; WFR(0, y, xp, 1, RGB(0x1c, 0x18, 0x1c)); WFR(xp, y, 2, 1, cyan); WFR(xp - 2, y, 2, 1, teal); }
+    for (y = 155; y < 200; y++) {                                      /* the dashboard */
+        int32_t x0 = 56 - (y - 155) / 3;
+        WFR(x0, y, 240 - x0, 1, y < 159 ? cyan : y < 172 ? RGB(0x18 + wash / 2, 0x68, 0x80) : RGB(0x10, 0x40, 0x50));
+    }
+    WFR(0, 200, 240, 40, RGB(0x14, 0x12, 0x16));
+    for (i = 0; i < 48; i++) {                                         /* the wheel: a bright arc, the cluster's orange rim */
+        uint32_t a = 128u + (uint32_t)i * 128u / 48u;
+        int32_t px = 100 + 70 * wv_sin4(a + 64u) / 127, py = 222 + 70 * wv_sin4(a) / 127;
+        WFR(px - 2, py - 2, 4, 4, cyan);
+        cv_pset(100 + 56 * wv_sin4(a + 64u) / 127, 222 + 56 * wv_sin4(a) / 127, RGB(0xb0, 0x60, 0x10)), cv_pset(100 + 55 * wv_sin4(a + 64u) / 127, 222 + 55 * wv_sin4(a) / 127, RGB(0xb0, 0x60, 0x10));
+    }
+    WFR(48, 172, 104, 34, RGB(0x14, 0x12, 0x16));
+    for (i = 0; i < 2; i++) {                                          /* the gauges: speed the tempo, revs the level */
+        int32_t gx = i ? 114 : 85, gy = 187, f = i ? ne_frac(song.g[G_BPM], 40, 240) : clamp(wv_all() * 3, 0, 1024), t;
+        uint32_t a = 96u + (uint32_t)f * 192u / 1024u;
+        for (t = 0; t < 10; t++) { uint32_t at = 96u + (uint32_t)t * 21u; cv_pset(gx + 11 * wv_sin4(at + 64u) / 127, gy + 11 * wv_sin4(at) / 127, RGB(0xd0, 0x70, 0x20)); }
+        wvf_pline(gx, gy, gx + 9 * wv_sin4(a + 64u) / 127, gy + 9 * wv_sin4(a) / 127, RGB(0xe0, 0x80, 0x20)), wvf_pline(gx + 1, gy, gx + 1 + 9 * wv_sin4(a + 64u) / 127, gy + 9 * wv_sin4(a) / 127, RGB(0xe0, 0x80, 0x20));
+    }
+    ne_ring(68, 194, 4, RGB(0x60, 0x30, 0x10)), ne_ring(132, 194, 4, RGB(0x60, 0x30, 0x10));
+    for (i = 0; i < 4; i++) WFR(78 + i * 11, 201, i == 1 ? 6 : 4, 2, wf_spec[i * 5] > 7 ? (i == 1 ? RGB(0x40, 0xe0, 0x40) : i == 3 ? RGB(0xe0, 0xc0, 0x20) : RGB(0xe0, 0x30, 0x30)) : RGB(0x30, 0x10, 0x10));
+    WFR(74, 205, 46, 6, teal), ne_ring(93, 225, 5, RGB(0x20, 0x70, 0x80));
+    WFR(168, 183, 58, 12, RGB(0x10, 0x0e, 0x12));                      /* the console: vents, the radio, the clock */
+    for (i = 0; i < 5; i++) WFR(170, 185 + i * 2, 24, 1, RGB(0x24, 0x22, 0x28)), WFR(198, 185 + i * 2, 24, 1, RGB(0x24, 0x22, 0x28));
+    WFR(168, 200, 58, 36, RGB(0x18, 0x16, 0x1a)), WFR(206, 202, 16, 10, RGB(0x10, 0x0e, 0x12));
+    fmt_int(b, (int32_t)(wf_secs() / 60u % 100u)), str_cpy(b + str_len(b), ".", 8 - str_len(b)), fmt_int(b + str_len(b), (int32_t)(wf_secs() % 60u));
+    wf_text(207, 204, 0, b, RGB(0xe0, 0x70, 0x20));
+    WFR(184, 214, 20, 2, RGB(0xc0, 0x60, 0x20)), ne_ring(176, 228, 4, RGB(0x30, 0x40, 0x50)), ne_ring(215, 228, 4, RGB(0x30, 0x40, 0x50));
+    wvf_disk(52, 186, 8, RGB(0x50, 0x54, 0x5a)), wvf_disk(56, 192, 7, RGB(0x44, 0x48, 0x50));   /* the hand on the wheel */
+    for (y = 196; y < 240; y++) WFR(40 + (y - 196) / 6, y, 16, 1, RGB(0x34, 0x38, 0x40));
+}
+/* the videos as pixel art (tools/vidpix_import.py, gen_vidpix.py): a whole frame, then each one's changes, decoded into wv_mem; two frames
+ * a beat while it plays, calmer when stopped. Painted in runs of one colour */
+#include "wfm_vidpix.h"
+static uint8_t vp_on = 0xFF, vp_f;
+static uint32_t vp_t;
+#define VP_AT(n) ((uint32_t)(wv_mem[(n) >> 1] >> (((n) & 1u) << 2)) & 15u)   /* the frame: 4 bits a pixel */
+static UI_NOINLINE void vp_decode(const vp_clip_t *c, uint32_t f)
+{
+    const uint8_t *d = c->data + c->off[f];
+    uint32_t n = 0, N = (uint32_t)c->w * c->h;
+    while (n < N) {
+        uint32_t b = *d++, idx = b >> 4, run = (b & 15u) + 1u, k;
+        if (run == 16u) run = 16u + *d++;
+        if (n + run > N) run = N - n;
+        if (idx != 15u) for (k = n; k < n + run; k++) wv_mem[k >> 1] = (uint8_t)(k & 1u ? (wv_mem[k >> 1] & 0x0Fu) | idx << 4 : (wv_mem[k >> 1] & 0xF0u) | idx);
+        n += run;
+    }
+}
+static UI_NOINLINE void vp_step(uint32_t clip)
+{
+    const vp_clip_t *c;
+    uint32_t per;
+    if (clip >= (uint32_t)VP_N) return;
+    c = &VP_CLIPS[clip];
+    per = 1000u * 120u / ((uint32_t)c->fps * (uint32_t)(song.playing ? clamp(song.g[G_BPM], 40, 240) : 90));   /* its own speed, with the tempo */
+    if (vp_on != clip) { vp_on = (uint8_t)clip, vp_f = 0, vp_t = fm1_ms; vp_decode(c, 0); return; }
+    if (c->nf > 1u && fm1_ms - vp_t >= per) { vp_t = fm1_ms; vp_f = (uint8_t)((vp_f + 1u) % c->nf); vp_decode(c, vp_f); }
+}
+static UI_NOINLINE void vp_paint(uint32_t clip, int32_t y0, int32_t hh)
+{
+    const vp_clip_t *c;
+    int32_t z, x, y;
+    if (clip >= (uint32_t)VP_N) return;
+    c = &VP_CLIPS[clip], z = 240 / c->w;
+    for (y = y0 / z; y < c->h && y * z < y0 + hh; y++)
+        for (x = 0; x < c->w;) {
+            uint32_t v = VP_AT((uint32_t)(y * c->w + x));
+            int32_t x1 = x + 1;
+            while (x1 < c->w && VP_AT((uint32_t)(y * c->w + x1)) == v) x1++;
+            WFR(x * z, y * z, (x1 - x) * z, z, c->pal[v]);
+            x = x1;
+        }
+}
+/* ---- the city (after the pixel-art cities): three layers of towers in 2 px dots, the same wherever a scene has a city. Each tower is
+ * fixed by its number (a hash), so the skyline stays as it scrolls; its windows (grids, strips, big panes) are lit at random and by the
+ * bands; railings, antennas with a red light, a tower with a ball; on the near layer neon signs (BAR, INN, ATM, a BANK board). With
+ * pc_mir set it draws itself again upside down under pc_base, darker and wavering: its reflection in water */
+typedef struct { uint16_t far, mid, near, warm, cool, neon, edge, glow; } pc_pal_t;
+static int32_t pc_base, pc_mir;
+static UI_NOINLINE uint32_t pc_h(uint32_t a) { a ^= a >> 7; a *= 2654435761u; return a ^ (a >> 13); }
+static UI_NOINLINE uint16_t pc_dim(uint16_t c) { return (uint16_t)((c >> 1) & 0x7BEFu); }
+static UI_NOINLINE void pc_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c)
+{
+    if (pc_mir) {
+        int32_t r;
+        for (r = 0; r < h; r++) {
+            int32_t my = 2 * pc_base - (y + r) - 1;
+            if (my < pc_base) continue;
+            WFR(x + WV_SIN[((uint32_t)my * 5u + wv_ph * 3u) & 63u] / 50, my, w, 1, (my & 2) ? pc_dim(c) : pc_dim(pc_dim(c)) | (c & 0x001Fu));
+        }
+    } else WFR(x, y, w, h, c);
+}
+static UI_NOINLINE void pc_city(int32_t base, int32_t scroll, const pc_pal_t *pl, int signs)
+{
+    static const char *const SG[5] = {"BAR", "INN", "ATM", "BANK", "WFM"};
+    int32_t L;
+    pc_base = base;
+    for (L = 0; L < 3; L++) {
+        int32_t slot = L == 0 ? 18 : L == 1 ? 24 : 34, sc = scroll * (L + 1) / 3, k0 = sc / slot, k;
+        uint16_t col = L == 0 ? pl->far : L == 1 ? pl->mid : pl->near;
+        for (k = k0 - 1; k <= k0 + 240 / slot + 1; k++) {
+            uint32_t h = pc_h((uint32_t)k * 3u + (uint32_t)L * 977u);
+            int32_t x = k * slot - sc + (int32_t)(h % 5u), bw = slot - 2 - (int32_t)(h >> 8) % 6, bh = (L == 0 ? 70 : L == 1 ? 46 : 26) + (int32_t)((h >> 12) % (L == 0 ? 60u : L == 1 ? 50u : 40u)), top = base - bh, r, c;
+            uint32_t pat = (h >> 4) % 3u;
+            pc_rect(x, top, bw, bh, col);
+            pc_rect(x, top, 1, bh, pl->edge);
+            if (h & 1u) for (c = 0; c < bw; c += 2) pc_rect(x + c, top - 2, 1, 2, pl->edge);   /* a railing */
+            if (h & 2u) { pc_rect(x + bw / 2, top - 8 - (int32_t)(h % 8u), 1, 8 + (int32_t)(h % 8u), pl->edge); if (((wv_ph / 10u) + (uint32_t)k) & 1u) pc_rect(x + bw / 2, top - 9 - (int32_t)(h % 8u), 1, 1, pl->neon); }
+            if (L == 0 && h % 7u == 0u) { pc_rect(x + bw / 2, top - 22, 2, 22, col); pc_rect(x + bw / 2 - 4, top - 28, 10, 7, col); pc_rect(x + bw / 2 - 2, top - 32, 6, 4, col); }
+            for (r = 0; r < bh / 6 - 1; r++)
+                for (c = 0; c < (bw - 2) / 4; c++) {
+                    uint32_t q = pc_h((uint32_t)k * 131u + (uint32_t)r * 7u + (uint32_t)c + (uint32_t)L * 31u);
+                    int lit = q % 5u < 2u || wf_spec[(uint32_t)(k + r) % 19u] > 11;
+                    uint16_t wc = L == 0 ? pc_dim(pl->cool) : (q >> 3) & 1u ? pl->warm : pl->cool;
+                    if (!lit) { if (L) wc = pc_dim(col) | pl->edge; else continue; }
+                    if (pat == 0u) pc_rect(x + 2 + c * 4, top + 3 + r * 6, 2, 2, wc);
+                    else if (pat == 1u) { if (!c) pc_rect(x + 2, top + 3 + r * 6, bw - 4, 1, wc); }
+                    else if (c % 2 == 0) pc_rect(x + 2 + c * 4, top + 3 + r * 6, 5, 3, wc);
+                }
+            if (signs && L == 2 && h % 5u == 0u) {                     /* a neon sign down its side */
+                const char *t = SG[(h >> 9) % 5u];
+                int32_t i, n = (int32_t)str_len(t);
+                for (i = 0; i < n; i++) { char ch[2] = {t[i], 0}; pc_rect(x + bw - 2, top + 6 + i * 10, 9, 9, pl->glow); if (!pc_mir) wf_text(x + bw, top + 7 + i * 10, 1, ch, pl->neon); }
+            }
+            if (signs && L == 1 && h % 9u == 4u) { pc_rect(x, top - 14, 30, 11, pl->glow); if (!pc_mir) wf_text(x + 3, top - 12, 1, SG[(h >> 5) % 5u], pl->neon); }   /* a board on the roof */
+        }
+    }
+}
+static UI_NOINLINE void pc_bokeh(int32_t n, int32_t y0, int32_t y1, uint16_t a, uint16_t b)   /* soft lights out of focus: dithered discs */
+{
+    int32_t i, x, y;
+    for (i = 0; i < n; i++) {
+        int32_t cx = (int32_t)((pc_h((uint32_t)i) % 260u + wv_ph / (uint32_t)(2 + i % 3)) % 260u) - 10, cy = y0 + (int32_t)(pc_h((uint32_t)i * 7u) % (uint32_t)(y1 - y0)), r = 4 + (int32_t)(pc_h((uint32_t)i * 3u) % 6u);
+        for (y = -r; y <= r; y++) for (x = -r; x <= r; x++) if (x * x + y * y <= r * r && ((x + y) & 1)) cv_pset(cx + x, cy + y, i & 1 ? a : b);
+    }
+}
+static const pc_pal_t PC_PURPLE = {RGB(0x6a, 0x58, 0xd0), RGB(0x50, 0x3c, 0xa8), RGB(0x34, 0x26, 0x70), RGB(0xff, 0xe8, 0x98), RGB(0xb0, 0xe0, 0xff),
+                                   RGB(0xff, 0x90, 0xe0), RGB(0x80, 0x70, 0xd8), RGB(0x80, 0x40, 0xa0)};
+static const pc_pal_t PC_TEAL = {RGB(0x2c, 0x50, 0x50), RGB(0x6a, 0x3c, 0x30), RGB(0x2a, 0x1e, 0x1c), RGB(0xf0, 0xe0, 0xc0), RGB(0xc8, 0xb8, 0xa8),
+                                 RGB(0xf0, 0x80, 0x30), RGB(0x90, 0x60, 0x40), RGB(0x80, 0x40, 0x20)};
+static UI_NOINLINE void pc_sky(uint16_t top, uint16_t bot, int32_t h)   /* a sky in bands, dithered where they meet */
+{
+    int32_t y, x;
+    for (y = 0; y < h; y += 2) {
+        int32_t t = y * 255 / h, r = (((top >> 11) & 31) * (255 - t) + ((bot >> 11) & 31) * t) / 255, g = (((top >> 5) & 63) * (255 - t) + ((bot >> 5) & 63) * t) / 255, b = ((top & 31) * (255 - t) + (bot & 31) * t) / 255;
+        uint16_t c = (uint16_t)(r << 11 | g << 5 | b);
+        WFR(0, y, 240, 2, c);
+        if ((y / 2) % 6 == 5 && y < h / 3) for (x = (y / 2) & 2; x < 240; x += 4) WFR(x, y, 2, 2, (uint16_t)(c + 0x0841u));   /* (the lines only up top) */
+    }
+}
+/* SHIP: our ship in the player's colours on the left, facing right; invaders, saucers and asteroids drift in from the right and wander
+ * there. It fires only when a note is played: one shot per note, at the nearest one, coloured by the note; a hit bursts it. Without notes
+ * they just hover facing each other. The same game in the window (the stars) and on the whole screen (the night over the roofs) */
+typedef struct { int16_t x, y, vx, vy; uint8_t kind, boom, wait, tx; } sh_en_t;   /* x, y: 1/1024 of the picture */
+static sh_en_t sh_e[6];
+static int16_t sh_b[8][5];                     /* shots: x, y, dx, dy (1/1024 a step), colour; dx == 0: none */
+static int32_t sh_y = 512, sh_warp;              /* the stars' speed: up with the notes, easing back */
+static const char *const SH_INV[4][8] = {
+    {"..X.....X..", "...X...X...", "..XXXXXXX..", ".XX.X.X.XX.", ".XXXXXXXXX.", "..X.XXX.X..", ".X.......X.", "X.........X"},
+    {"...XXXXX...", ".XXXXXXXXX.", "XX..XXX..XX", "XXXXXXXXXXX", "..XX...XX..", ".XX.XXX.XX.", "XX.......XX", "..........."},
+    {".....X.....", "...XXXXX...", ".XXX...XXX.", "XXX..X..XXX", ".XXX...XXX.", "...XXXXX...", "..X.X.X.X..", ".X.......X."},
+    {"....XXXXX....", "..XXXXXXXXX..", "XXX.XX.XX.XXX", "..XXXXXXXXX..", "...X..X..X...", ".............", ".............", "............."}};
+static const char *const SH_ME[9] = {"BB............", "DBBB..........", ".DBBBBB.......", ".DDBBBGGBB....", "..DBBBGGGBBBO.", ".DDBBBGGBB....", ".DBBBBB.......",
+                                     "DBBB..........", "BB............"};
+static UI_NOINLINE void sh_spawn(sh_en_t *e)
+{
+    uint32_t h = pc_h(wv_ph * 7u + (uint32_t)(e - sh_e) * 31u);
+    e->kind = (uint8_t)(h % 6u), e->x = 1100, e->y = (int16_t)(120 + (int32_t)((h >> 3) % 760u)), e->vx = (int16_t)-(4 + (int32_t)((h >> 9) % 5u)), e->vy = 0;
+    e->boom = 0, e->wait = 0, e->tx = (uint8_t)(120 + (h >> 13) % 100u);   /* where it stops coming in (x / 4) */
+}
+static UI_NOINLINE void sh_step(void)
+{
+    int32_t i, k, best = -1, bd = 99999;
+    for (i = 0; i < 6; i++) {
+        sh_en_t *e = &sh_e[i];
+        if (e->boom) { if (--e->boom == 0) e->wait = (uint8_t)(10 + i * 3); continue; }
+        if (e->wait) { if (--e->wait == 0) sh_spawn(e); continue; }
+        if (!e->x) { sh_spawn(e); continue; }
+        if (e->kind == 5u) { e->x = (int16_t)(e->x + e->vx); if (e->x < -60) sh_spawn(e); }          /* an asteroid: it just drifts across */
+        else if (e->x > e->tx * 4) e->x = (int16_t)(e->x + e->vx);                                    /* coming in */
+        else {                                                                                       /* wandering on the right */
+            if (!(wv_ph % 12u)) { uint32_t h = pc_h(wv_ph + (uint32_t)i * 77u); e->vx = (int16_t)((int32_t)(h % 9u) - 4); e->vy = (int16_t)((int32_t)((h >> 4) % 13u) - 6); }
+            e->x = (int16_t)clamp(e->x + e->vx, 480, 980), e->y = (int16_t)clamp(e->y + e->vy, 80, 920);
+        }
+        { int32_t d = e->y - sh_y; d = d < 0 ? -d : d; d += (e->x - 200) / 3; if (e->x < 1000 && d < bd) bd = d, best = i; }
+    }
+    sh_warp += nk_on ? 6 : 0, sh_warp = clamp(sh_warp, 0, 40), sh_warp -= sh_warp > 0 ? 1 : 0;
+    if (best >= 0) sh_y += (sh_e[best].y - sh_y) / (ev_rate > 40 ? 2 : 4);   /* it turns to face the nearest: quick, quicker when you play */
+    for (k = 0; k < 27; k++) if ((nk_on >> k) & 1u && best >= 0) {       /* a note: a shot */
+        for (i = 0; i < 8; i++) if (!sh_b[i][2]) {
+            int32_t dx = sh_e[best].x - 150, dy = sh_e[best].y - sh_y, n = (dx < 0 ? -dx : dx) / (130 + sh_warp * 4) + 1;
+            sh_b[i][0] = 150, sh_b[i][1] = (int16_t)sh_y, sh_b[i][2] = (int16_t)(dx / n ? dx / n : 1), sh_b[i][3] = (int16_t)(dy / n), sh_b[i][4] = (int16_t)k;
+            break;
+        }
+    }
+    for (i = 0; i < 8; i++) if (sh_b[i][2]) {
+        sh_b[i][0] = (int16_t)(sh_b[i][0] + sh_b[i][2]), sh_b[i][1] = (int16_t)(sh_b[i][1] + sh_b[i][3]);
+        for (k = 0; k < 6; k++) {
+            sh_en_t *e = &sh_e[k];
+            int32_t dx = e->x - sh_b[i][0], dy = e->y - sh_b[i][1];
+            if (!e->boom && !e->wait && e->x < 1024 && dx < 60 && dx > -60 && dy < 70 && dy > -70) { e->boom = 10; sh_b[i][2] = 0; break; }
+        }
+        if (sh_b[i][0] > 1100 || sh_b[i][0] < -50) sh_b[i][2] = 0;
+    }
+}
+static UI_NOINLINE uint16_t sh_note_col(int32_t k)
+{
+    static const uint16_t C[6] = {RGB(0xff, 0x50, 0x40), RGB(0xff, 0xa0, 0x30), RGB(0xf0, 0xf0, 0x60), RGB(0x60, 0xf0, 0x90), RGB(0x60, 0xc0, 0xff), RGB(0xd0, 0x80, 0xff)};
+    return C[(k * 6) / 27];
+}
+static UI_NOINLINE void sh_draw(int32_t rx, int32_t ry, int32_t rw, int32_t rh, int32_t z, int big)
+{
+    int32_t i, r, c;
+    uint16_t en = RGB(0xe0, 0xe8, 0xd0), star = RGB(0xc8, 0xd8, 0xc0);
+#define SX(v) (rx + (v) * rw / 1024)
+#define SY(v) (ry + (v) * rh / 1024)
+    WFR(rx, ry, rw, rh, RGB(0x10, 0x0c, 0x1e));                         /* the stars: dots, streaking when you play */
+    for (i = 0; i < (big ? 70 : 34); i++) {
+        uint32_t sp = 1u + (uint32_t)(i % 3) + (uint32_t)sh_warp / 3u;
+        int32_t x = rx + (int32_t)((pc_h((uint32_t)i * 13u) % (uint32_t)rw + (uint32_t)rw * 64u - (wv_ph * sp) % ((uint32_t)rw * 64u)) % (uint32_t)rw), y = ry + (int32_t)(pc_h((uint32_t)i * 29u) % (uint32_t)rh), l = sh_warp * (1 + i % 3) / 3;
+        WFR(x, y, 1 + l, 1, l > 6 ? (i & 1 ? RGB(0x80, 0xc0, 0xff) : WC_WHT) : star);
+        if (i % 11 == 0 && !l) WFR(x - 1, y, 3, 1, star), WFR(x, y - 1, 1, 3, star);
+    }
+    for (i = 0; i < 6; i++) {                                          /* them */
+        sh_en_t *e = &sh_e[i];
+        int32_t x = SX(e->x), y = SY(e->y);
+        if (e->wait || !e->x) continue;
+        if (e->boom) {                                                 /* a burst */
+            int32_t rr = (10 - e->boom) * z;
+            for (r = 0; r < 8; r++) { uint32_t an = (uint32_t)r * 32u; WFR(x + rr * wv_sin4(an + 64u) / 127, y + rr * wv_sin4(an) / 127, z, z, e->boom & 1 ? WC_WHT : RGB(0xff, 0xa0, 0x30)); }
+            continue;
+        }
+        if (e->kind == 5u) {                                           /* an asteroid */
+            wvf_disk(x, y, 4 * z, RGB(0x8a, 0x84, 0x90)), WFR(x - z, y - 2 * z, 2 * z, z, RGB(0x60, 0x5a, 0x68)), WFR(x + z, y + z, z, z, RGB(0x60, 0x5a, 0x68));
+            continue;
+        }
+        {
+            const char *const *sp = SH_INV[e->kind < 4u ? e->kind : 3u];
+            int32_t w = (int32_t)str_len(sp[0]), fl = (int32_t)((wv_ph / 6u + (uint32_t)i) & 1u);
+            for (r = 0; r < 8; r++) for (c = 0; c < w; c++) if (sp[r][c] == 'X' && !(fl && r == 7)) WFR(x - w * z / 2 + c * z, y - 4 * z + r * z, z, z, en);
+        }
+    }
+    {                                                                  /* us */
+        int32_t x = SX(90), y = SY(sh_y);
+        for (r = 0; r < 9; r++) for (c = 0; c < 14; c++) {
+            char ch = SH_ME[r][c];
+            if (ch != '.') WFR(x + c * z, y - 9 * z / 2 + r * z, z, z, ch == 'B' ? WC_BTN : ch == 'D' ? WC_FR2 : ch == 'G' ? WC_GRN : WC_AMB);
+        }
+        for (i = 0; i < 2 + (int32_t)(wv_ph & 1u) + wv_bass() / 6; i++) WFR(x - (i + 1) * z, y - z / 2, z, z, i < 1 ? WC_WHT : RGB(0xff, 0x80, 0x30));
+    }
+    for (i = 0; i < 8; i++) if (sh_b[i][2]) { int32_t x = SX(sh_b[i][0]), y = SY(sh_b[i][1]); WFR(x - 3 * z, y, 4 * z, z, sh_note_col(sh_b[i][4])); }
+#undef SX
+#undef SY
+}
+/* ==== v2: the chosen ones ====================================================================================================== */
+/* the keys that sound (pressed, or played by the tracks) and the ones that just started; an energy that follows the level softly */
+static UI_NOINLINE uint32_t keys_sounding(const track_t *t);
+static UI_NOINLINE void nk_step(void)
+{
+    uint32_t m = fm1_in.notes, i, n = 0, d;
+    for (i = 0; i < NTRK; i++) m |= keys_sounding(&trk[i]);
+    nk_on = m & ~nk_prev, nk_prev = m, nk_mask = m;
+    nk_hand = fm1_in.notes, nk_hon = nk_hand & ~nk_hprev, nk_hprev = nk_hand;
+    dr_hits = drum_vis_hits, drum_vis_hits = 0;
+    for (d = nk_on; d; d >>= 1) n += d & 1u;
+    ev_rate += ((int32_t)n * 20 * 16 - ev_rate) / 24;                 /* (20 steps a second) */
+    ev_lvl += (wv_all() - ev_lvl) / 4;
+}
+static UI_NOINLINE int32_t nk_low(uint32_t m) { return (m & 0x1FFFu) != 0u; }      /* a key on the left half (F3..) */
+static UI_NOINLINE int32_t nk_high(uint32_t m) { return (m & 0x7FFE000u) != 0u; }  /* on the right half */
+static UI_NOINLINE int32_t nk_top(uint32_t m) { int32_t k = -1; while (m) { k++; m >>= 1; } return k; }   /* the highest key, -1 none */
+
+/* ---- the road (RACER, DRIVE): a pseudo-3D road as the old tunnel, rows from the horizon down, the 2D pictures over it. Three lanes; the
+ * other cars come back at us, ours changes lane before it reaches one; the speed starts low and climbs with the beat and the tempo, the
+ * curves grow with it */
+typedef struct { uint16_t road, dash, edge, side, post, glow; } rd_pal_t;
+static int32_t rd_pos, rd_spd = 40, rd_cur, rd_curt, rd_px, rd_lane = 1, rd_kmh = 90 * 16, rd_ovt;
+static int32_t rd_car[4][3] = {{900, 1, 0}, {1600, 0, 1}, {2300, 2, 2}, {3200, 1, 3}};   /* distance ahead, lane, colour */
+static UI_NOINLINE void rd_step(void)
+{
+    int32_t i, tgt = 90 + clamp((clamp(song.g[G_BPM], 40, 240) - 70) / 2 + ev_rate / 5 + ev_lvl / 3, 0, 120);   /* the km/h it wants: 90 cruising, up to 210 with the tempo, the notes, the level */
+    if (!song.playing && ev_lvl < 10) tgt = 90;
+    if (rd_ovt) rd_ovt--, tgt = tgt + 30 > 210 ? 210 : tgt + 30;      /* an overtake: a push of ~30 */
+    tgt *= 16, rd_kmh += (tgt - rd_kmh) / (tgt > rd_kmh ? 40 : 16);    /* (it climbs slowly, slows a little faster) */
+    rd_spd = (rd_kmh / 16 - 30) * 2 / 3;                               /* the road runs at the speed the dial says */
+    rd_pos += rd_spd;
+    if (!(wv_ph % 40u)) rd_curt = (int32_t)(pc_h(wv_ph) % 200u) - 100;   /* a new bend now and then, sharper when fast */
+    rd_cur += (rd_curt * clamp(rd_spd - 30, 0, 160) / 160 - rd_cur) / 20;
+    for (i = 0; i < 4; i++) {
+        int32_t *c = rd_car[i];
+        c[0] -= rd_spd - 34;
+        if (c[0] < -120) c[0] = 2400 + (int32_t)(pc_h((uint32_t)i + wv_ph) % 1200u), c[1] = (int32_t)(pc_h(wv_ph * 3u + (uint32_t)i) % 3u);
+        if (c[0] > 0 && c[0] < 520 && c[1] == rd_lane) {                /* one ahead in our lane: the free lane next to it */
+            int32_t a = rd_lane == 0 ? 1 : rd_lane == 2 ? 1 : (pc_h(wv_ph) & 1u) ? 0 : 2, j, ok = 1;
+            for (j = 0; j < 4; j++) if (rd_car[j][1] == a && rd_car[j][0] > -60 && rd_car[j][0] < 700) ok = 0;
+            if (ok) rd_lane = a, rd_ovt = 90;
+            else for (j = 0; j < 3; j++) { int32_t k2, ok2 = j != rd_lane; for (k2 = 0; k2 < 4; k2++) if (rd_car[k2][1] == j && rd_car[k2][0] > -60 && rd_car[k2][0] < 700) ok2 = 0; if (ok2) { rd_lane = j, rd_ovt = 90; break; } }
+        }
+    }
+    rd_px += ((rd_lane - 1) * 170 - rd_px) / 5;                        /* (the lane change: quick, then settling) */
+}
+static UI_NOINLINE int32_t rd_cx(int32_t y, int32_t yh, int32_t yb) { int32_t d = y - yh, w = d * 2 + 4, f = yb - y; return 120 - rd_px * w / 256 + rd_cur * f * f / 900; }
+static UI_NOINLINE int32_t rd_w(int32_t y, int32_t yh) { return (y - yh) * 2 + 4; }
+static UI_NOINLINE void rd_draw(int32_t yh, int32_t yb, const rd_pal_t *p)
+{
+    int32_t y, i;
+    for (y = yh; y < yb; y++) {
+        int32_t d = y - yh + 1, z = 6000 / d, w = rd_w(y, yh), cx = rd_cx(y, yh, yb), on = ((z + rd_pos / 8) / 40) & 1, dw = 1 + d / 16;
+        WFR(cx - w, y, 2 * w, 1, p->road);
+        WFR(cx - w - 1 - d / 20, y, 1 + d / 20, 1, p->edge), WFR(cx + w, y, 1 + d / 20, 1, p->edge);
+        if (on) { WFR(cx - w / 3 - dw / 2, y, dw, 1, p->dash), WFR(cx + w / 3 - dw / 2, y, dw, 1, p->dash); }
+        if (((z + rd_pos / 8) % 260) < 3 && d > 4) {                   /* the posts with their lamps, both sides */
+            int32_t ph = d / 2 + 4, l;
+            for (l = -1; l <= 1; l += 2) {
+                int32_t px = cx + l * (w + 8 + d / 3);
+                WFR(px, y - ph, 1 + d / 30, ph, p->post), WFR(l < 0 ? px : px - 2 - d / 12, y - ph, 3 + d / 12, 1 + d / 40, p->post);
+                wvf_disk(l < 0 ? px + 2 + d / 12 : px - 2 - d / 12, y - ph + 1, 1 + d / 30, p->glow);
+            }
+        }
+    }
+    for (i = 3; i >= 0; i--) {                                         /* the others, the farthest first */
+        int32_t dz = rd_car[i][0], yy, s, lx, w;
+        static const uint16_t CC[4] = {RGB(0xe0, 0xe0, 0xe8), RGB(0x40, 0xc0, 0x60), RGB(0x40, 0x80, 0xe0), RGB(0xf0, 0xc0, 0x30)};
+        if (dz <= 20 || dz > 2600) continue;
+        yy = yh + 6000 * 8 / (dz * 40 / 40 + 60) / 8;
+        if (yy >= yb || yy <= yh) continue;
+        w = rd_w(yy, yh), s = 2 + w / 9, lx = rd_cx(yy, yh, yb) + (rd_car[i][1] - 1) * w * 2 / 3;
+        WFR(lx - s, yy - s * 2 / 3, s * 2, s * 2 / 3, CC[rd_car[i][2]]), WFR(lx - s + s / 4, yy - s, s * 3 / 2, s / 3 + 1, CC[rd_car[i][2]]);
+        WFR(lx - s, yy - s / 3, s / 3 + 1, s / 4 + 1, RGB(0xff, 0x30, 0x30)), WFR(lx + s - s / 3 - 1, yy - s / 3, s / 3 + 1, s / 4 + 1, RGB(0xff, 0x30, 0x30));
+        WFR(lx - s, yy, s / 2, 1 + s / 6, C_BLACK), WFR(lx + s / 2, yy, s / 2, 1 + s / 6, C_BLACK);
+    }
+}
+/* the strip city (after the night-drive one): towers drawn in dotted lines, lit dots, spires, a wheel turning, signs and round bulbs along
+ * the base; it slides with the bends */
+static UI_NOINLINE void rd_city(int32_t base, int32_t scroll, uint16_t a, uint16_t b, uint16_t c)
+{
+    int32_t k, x, y;
+    for (k = -1; k < 15; k++) {
+        uint32_t h = pc_h((uint32_t)(k + 40 + scroll / 20) * 7u);
+        int32_t bx = k * 20 - ((scroll % 20) + 20) % 20, bw = 10 + (int32_t)(h % 8u), bh = 14 + (int32_t)((h >> 5) % 34u), t = base - bh, kind = (int32_t)((h >> 9) % 6u);
+        for (y = t; y < base; y += 2) WFR(bx, y, 1, 1, a), WFR(bx + bw, y, 1, 1, a);
+        for (x = bx; x <= bx + bw; x += 2) WFR(x, t, 1, 1, a);
+        for (y = t + 3; y < base - 2; y += 4) for (x = bx + 2; x < bx + bw - 1; x += 3) if (((uint32_t)(x * 5 + y * 3) + h) % 4u == 0u || wf_spec[(uint32_t)(x + y) % 19u] > 11) WFR(x, y, 1, 1, b);
+        if (kind == 0) for (y = 0; y < 14; y += 2) WFR(bx + bw / 2, t - 2 - y, 1, 1, a);                    /* a spire */
+        else if (kind == 1) { int32_t cxw = bx + bw / 2, cyw = t - 12, r = 10; uint32_t q; for (q = 0; q < 16u; q++) { uint32_t an = q * 16u + wv_ph * 2u; WFR(cxw + r * wv_sin4(an + 64u) / 127, cyw + r * wv_sin4(an) / 127, 1, 1, (q & 1u) ? b : a); }
+            for (q = 0; q < 4u; q++) { uint32_t an = q * 64u + wv_ph * 2u; wvf_pline(cxw, cyw, cxw + r * wv_sin4(an + 64u) / 127, cyw + r * wv_sin4(an) / 127, a); } }   /* a wheel */
+        else if (kind == 2) { int32_t sw2 = 26; for (x = 0; x < sw2; x += 2) WFR(bx + x, t - 12, 1, 1, ((uint32_t)x / 2u + wv_ph / 3u) & 1u ? b : a), WFR(bx + x, t - 3, 1, 1, ((uint32_t)x / 2u + wv_ph / 3u) & 1u ? a : b);
+            wf_text(bx + 4, t - 10, 0, (h >> 12) & 1u ? "WFM" : "BAR", a); }                              /* a sign */
+        if ((h >> 3) % 3u == 0u) wvf_disk(bx + bw / 2, base - 3, 2 + (int32_t)((h >> 14) % 3u), c);       /* a bulb */
+    }
+}
+static const rd_pal_t RD_VEGAS = {RGB(0x04, 0x04, 0x04), RGB(0xf8, 0xa0, 0x20), RGB(0xf8, 0xa0, 0x20), 0, RGB(0x30, 0xb0, 0xc0), RGB(0xa0, 0xf0, 0xff)};
+static const rd_pal_t RD_SYNTH = {RGB(0x18, 0x0c, 0x30), RGB(0xff, 0x60, 0xd0), RGB(0x60, 0xe0, 0xff), 0, RGB(0x60, 0x40, 0xb0), RGB(0xff, 0xc0, 0xf0)};
+static UI_NOINLINE void rd_player(int32_t x0, int32_t y0, int brake)  /* our red car from behind (2 px), its tail lights; a puff on a hard bend */
+{
+    int32_t r, c;
+    for (r = 0; r < 12; r++) for (c = 0; c < 20; c++) {
+        char ch = RC_CAR[r][c];
+        uint16_t col = ch == '1' ? RGB(0xd8, 0x20, 0x20) : ch == '2' ? RGB(0x20, 0x08, 0x08) : ch == '3' ? RGB(0x60, 0x08, 0x08) : ch == '4' ? (brake ? RGB(0xff, 0xff, 0xc0) : RGB(0xff, 0x60, 0x40)) : ch == '5' ? RGB(0x18, 0x18, 0x18) : 0;
+        if (ch != '.') WFR(x0 + c * 2, y0 + r * 2, 2, 2, col);
+    }
+}
+/* RACER: the night drive through the strip (after the orange-lit one), the dashboard of a car below */
+static UI_NOINLINE void v2_racer(void)
+{
+    int32_t i, kmh = rd_kmh / 16;
+    char b[12];
+    rd_city(110, rd_cur / 2 + (int32_t)(rd_pos / 400), RGB(0xf8, 0xa0, 0x20), RGB(0xff, 0xe0, 0x90), RGB(0xff, 0xb0, 0x40));
+    for (i = 0; i < 3; i++) WFR((int32_t)(pc_h((uint32_t)i * 9u) % 200u) + 20, 50 + i * 9, 1, 30 - i * 8, RGB(0xf8, 0xa0, 0x20));   /* (searchlight poles) */
+    WFR(0, 110, 240, 2, RGB(0x60, 0x30, 0x08));
+    rd_draw(112, 192, &RD_VEGAS);
+    rd_player(100 + (rd_cur / 10), 160 + (int32_t)((wv_ph / 2u) & 1u), wvf_hit_n > 2);
+    for (i = 0; i < 52; i++) { int32_t x = 4 + i * 4 + i / 13 * 2, top = 192 + (i - 26) * (i - 26) / 120; WFR(x, top, 4, 240 - top, RGB(0x1a, 0x1a, 0x22)); }   /* the dashboard: a curved hood */
+    for (i = 0; i < 240; i += 2) { int32_t top = 192 + (i / 4 - 26) * (i / 4 - 26) / 120; WFR(i, top, 2, 1, RGB(0x50, 0x50, 0x68)); }
+    for (i = 0; i < 2; i++) {                                          /* two dials: the speed, the level */
+        int32_t gx = i ? 196 : 44, gy = 222, f = i ? clamp(ev_lvl * 4, 0, 1024) : clamp(kmh * 1024 / 240, 0, 1024), t;
+        uint32_t a = 96u + (uint32_t)f * 192u / 1024u;
+        wvf_disk(gx, gy, 17, RGB(0x30, 0x30, 0x40)), wvf_disk(gx, gy, 15, RGB(0x06, 0x06, 0x0a));
+        for (t = 0; t <= 8; t++) { uint32_t at = 96u + (uint32_t)t * 24u; WFR(gx + 12 * wv_sin4(at + 64u) / 127, gy + 12 * wv_sin4(at) / 127, 1, 1, t >= 6 ? RGB(0xff, 0x40, 0x30) : RGB(0xf8, 0xa0, 0x20)); }
+        ne_line(gx, gy, gx + 11 * wv_sin4(a + 64u) / 127, gy + 11 * wv_sin4(a) / 127, RGB(0xff, 0x40, 0x30));
+    }
+    WFR(80, 206, 80, 30, RGB(0x06, 0x0c, 0x08)), WFR(80, 206, 80, 1, RGB(0x40, 0xc0, 0x80));   /* the LCD: speed, rev bar, time */
+    fmt_int(b, kmh), wf_textr(140, 210, 1, b, RGB(0x60, 0xf0, 0x90)), wf_text(144, 210, 0, "KM/H", RGB(0x60, 0xf0, 0x90));
+    for (i = 0; i < 14; i++) WFR(84 + i * 5, 222, 4, 4, i < clamp(ev_lvl / 12, 0, 14) ? (i < 10 ? RGB(0x60, 0xf0, 0x90) : RGB(0xff, 0x50, 0x40)) : RGB(0x14, 0x30, 0x20));
+    fmt_int(b, (int32_t)(wf_secs() / 60u)), str_cpy(b + str_len(b), "'", 12 - str_len(b)), fmt_int(b + str_len(b), (int32_t)(wf_secs() % 60u)), wf_text(86, 229, 0, b, RGB(0x60, 0xf0, 0x90));
+}
+/* DRIVE: the same road from inside (after the purple car and the night-drive one): the windscreen, the mirror and a little charm swinging,
+ * the wheel turning with the bends (no one at it), the dashboard glowing with the music, the radio on:
+ * its equaliser the spectrum, the sound's name running on its display */
+static UI_NOINLINE void v2_drive(void)
+{
+    int32_t i, y, x, gl = clamp(ev_lvl / 3, 0, 60), tilt = -rd_cur / 8;
+    uint16_t frame = RGB(0x2a, 0x1c, 0x4c), dash = RGB(0x50 + gl / 2, 0x38, 0x98 + gl), rim = RGB(0x90 + gl, 0x70, 0xe0);
+    char nm[14];
+    pc_sky(RGB(0x10, 0x08, 0x38), RGB(0x90, 0x30, 0x90), 96);
+    for (i = 0; i < 26; i++) WFR((int32_t)(pc_h((uint32_t)i) % 240u), (int32_t)(pc_h((uint32_t)i * 5u) % 60u), 1, 1, wf_spec[i % 19] > 10 ? WC_WHT : RGB(0xc0, 0xa0, 0xf0));
+    rd_city(96, rd_cur / 2 + (int32_t)(rd_pos / 400), RGB(0xff, 0x70, 0xd0), RGB(0x80, 0xf0, 0xff), RGB(0xff, 0xa0, 0xe0));
+    rd_draw(96, 150, &RD_SYNTH);
+    WFR(0, 0, 240, 22, frame);                                         /* the top of the windscreen (no pillars: the street stays open) */
+    WFR(0, 22, 240, 1, rim);
+    WFR(80, 24, 80, 26, RGB(0x10, 0x08, 0x20));                       /* the mirror: what is behind, the picture flipped */
+    if (wf_ry == 0 && cv_oy == 0 && cv_w == 240u) {
+        int32_t my, mx;
+        for (my = 0; my < 22; my++) { const uint16_t *src = cv_px + (uint32_t)(52 + my * 2) * 240u; uint16_t *dst = cv_px + (uint32_t)(26 + my) * 240u; for (mx = 0; mx < 76; mx++) dst[82 + mx] = src[196 - mx * 2]; }
+    }
+    WFR(80, 24, 80, 2, rim), WFR(80, 48, 80, 2, rim), WFR(80, 24, 2, 26, rim), WFR(158, 24, 2, 26, rim);
+    { int32_t sw = WV_SIN[(wv_ph * 4u) & 63u] * (3 + wv_bass() / 3) / 127; wvf_pline(120, 50, 120 + sw, 60, RGB(0x80, 0x70, 0xa0)); wvf_disk(120 + sw, 63, 3, RGB(0xff, 0x80, 0xc0)); }
+    for (y = 150; y < 240; y++) WFR(0, y, 240, 1, y < 153 ? rim : y < 176 ? dash : RGB(0x30, 0x20, 0x60));   /* the dashboard */
+    for (x = 0; x < 240; x += 4) WFR(x, 153, 2, 1, (wf_spec[(uint32_t)x / 13u % 19u] > 8) ? RGB(0xff, 0xb0, 0xff) : dash);   /* (a light strip that the bands run along) */
+    WFR(124, 160, 80, 44, RGB(0x14, 0x0c, 0x28)), WFR(124, 160, 80, 1, rim);                    /* the radio */
+    WFR(128, 164, 72, 12, RGB(0x06, 0x10, 0x10));
+    if (song.sel < NPART) trk_short_name(song.sel, nm); else str_cpy(nm, "DRUMS", 14);
+    wf_clx0 = 129, wf_clx1 = 199;
+    wf_text(200 - (int32_t)((wv_ph * 2u) % (uint32_t)(wf_tw(1, nm) + 72)), 166, 1, nm, RGB(0x60, 0xff, 0xd0));
+    wf_clx0 = 0, wf_clx1 = 240;
+    for (i = 0; i < 19; i++) { int32_t h = clamp(wf_spec[i], 0, 18); WFR(129 + i * 4 - i / 5, 198 - h, 3, h, i < 6 ? RGB(0x40, 0xe0, 0xff) : i < 13 ? RGB(0xff, 0x70, 0xd0) : RGB(0xff, 0xe0, 0x60)); }
+    wvf_disk(212, 172, 5, RGB(0x30, 0x24, 0x50)), wvf_disk(212, 190, 5, RGB(0x30, 0x24, 0x50));
+    for (i = 0; i < 2; i++) { uint32_t an = 96u + (uint32_t)clamp(i ? ev_lvl * 2 : song.g[G_BPM], 0, 192); wvf_pline(212, 172 + i * 18, 212 + 4 * wv_sin4(an + 64u) / 127, 172 + i * 18 + 4 * wv_sin4(an) / 127, RGB(0xff, 0xb0, 0xff)); }
+    {                                                                  /* behind the wheel: the cluster (its two dials turning, the marks, the lights) */
+        int32_t g, t;
+        WFR(26, 160, 86, 50, RGB(0x10, 0x0a, 0x1c));
+        for (t = 0; t < 40; t++) { uint32_t an = 128u + (uint32_t)t * 128u / 40u; WFR(68 + 42 * wv_sin4(an + 64u) / 127, 204 + 42 * wv_sin4(an) / 127, 2, 2, RGB(0xb0, 0x60, 0x10)); }
+        for (g = 0; g < 2; g++) {
+            int32_t gx = g ? 86 : 50, gy = 184, f = g ? clamp(rd_kmh / 16 * 1024 / 240, 0, 1024) : clamp(ev_lvl * 3, 0, 1024);
+            uint32_t a = 96u + (uint32_t)f * 192u / 1024u;
+            for (t = 0; t < 10; t++) { uint32_t at = 96u + (uint32_t)t * 21u; WFR(gx + 12 * wv_sin4(at + 64u) / 127, gy + 12 * wv_sin4(at) / 127, 1, 1, RGB(0xd0, 0x70, 0x20)); }
+            ne_line(gx, gy, gx + 10 * wv_sin4(a + 64u) / 127, gy + 10 * wv_sin4(a) / 127, RGB(0xff, 0x90, 0x30));
+        }
+        ne_ring(36, 196, 4, RGB(0x60, 0x30, 0x10)), ne_ring(100, 196, 4, RGB(0x60, 0x30, 0x10));
+        for (t = 0; t < 4; t++) WFR(54 + t * 8, 202, 5, 2, (int32_t)trk_level((uint32_t)t) && sp_s[t * 4] > 6 ? (t == 1 ? RGB(0x40, 0xe0, 0x40) : t == 3 ? RGB(0xe0, 0xc0, 0x20) : RGB(0xe0, 0x30, 0x30)) : RGB(0x30, 0x10, 0x10));
+    }
+    {                                                                  /* the wheel: a ring, three spokes, turned by the bend */
+        int32_t cx = 68, cy = 196, R = 44;
+        uint32_t q;
+        for (q = 0; q < 64u; q++) { uint32_t an = q * 4u; WFR(cx + R * wv_sin4(an + 64u) / 127 - 2, cy + R * wv_sin4(an) / 127 - 2, 5, 5, RGB(0x34, 0x22, 0x66)); }
+        for (q = 0; q < 3u; q++) { uint32_t an = (uint32_t)(64 + (int32_t)q * 85 + tilt * 4); ne_line3(cx, cy, cx + (R - 2) * wv_sin4(an + 64u) / 127, cy + (R - 2) * wv_sin4(an) / 127, RGB(0x20, 0x14, 0x40)); }
+        wvf_disk(cx, cy, 10, RGB(0x24, 0x18, 0x44)), wvf_disk(cx, cy, 3, RGB(0xff, 0x80, 0xc0));
+    }
+}
+/* SYNTH: the synthwave land (after the grid ones): a striped sun behind a city in neon outlines, mountains, the grid running at the tempo, and
+ * a little car seen from above the road, its cyan trail snaking behind it with the melody */
+static int32_t sy_path[24], sy_x;
+static uint8_t sy_col[24];
+static UI_NOINLINE void v2_synth(void)
+{
+    int32_t i, y, x, hy = 128, sp = (int32_t)(wv_ph * (uint32_t)(2 + clamp(song.g[G_BPM], 40, 240) / 40));
+    pc_sky(RGB(0x08, 0x04, 0x20), RGB(0x40, 0x10, 0x60), hy);
+    for (i = 0; i < 30; i++) WFR((int32_t)(pc_h((uint32_t)i * 3u) % 240u), (int32_t)(pc_h((uint32_t)i * 11u) % 90u), 1 + (int32_t)(i % 7 == 0), 1 + (int32_t)(i % 7 == 0), RGB(0x60, 0xf0, 0xff));
+    {                                                                  /* the sun: yellow to pink, its stripes running down, wider with the bass */
+        int32_t R = 46 + wv_bass() / 6, cy = 92;
+        for (y = cy - R; y < hy; y++) {
+            int32_t dy = y - cy, hw = 0, t = (y - (cy - R)) * 255 / (R * 2), gap = dy > -6 ? (dy + 6) / 6 + wv_bass() / 8 : 0;
+            while ((hw + 1) * (hw + 1) + dy * dy <= R * R) hw++;
+            if (gap && ((uint32_t)(y - (int32_t)(wv_ph / 2u)) % 9u) < (uint32_t)gap) continue;
+            WFR(120 - hw, y, 2 * hw, 1, RGB(0xff, 0xe8 - t * 3 / 4 > 0x20 ? 0xe8 - t * 3 / 4 : 0x20, 0x20 + t * 3 / 4 > 0xff ? 0xff : 0x20 + t * 3 / 4));
+        }
+    }
+    for (i = 0; i < 13; i++) {                                         /* the city: neon outlines in front of the sun */
+        uint32_t h = pc_h((uint32_t)i * 13u + 5u);
+        int32_t bx = 64 + i * 9, bw = 7 + (int32_t)(h % 5u), bh = 18 + (int32_t)((h >> 4) % 36u) + (wf_spec[(uint32_t)i * 19u / 13u] > 12 ? 3 : 0), t = hy - 8 - bh;
+        WFR(bx, t, bw, bh, RGB(0x14, 0x06, 0x30));
+        WFR(bx, t, 1, bh, RGB(0x40, 0xe0, 0xff)), WFR(bx + bw, t, 1, bh, RGB(0x40, 0xe0, 0xff)), WFR(bx, t, bw, 1, RGB(0x40, 0xe0, 0xff));
+        if (h & 1u) WFR(bx + bw / 2, t - 6, 1, 6, RGB(0x40, 0xe0, 0xff));
+        for (y = t + 4; y < hy - 10; y += 5) {
+            int32_t lit = (hy - 10 - y) < (int32_t)sp_s[(uint32_t)i * 19u / 13u] * 4, nt = (nk_mask >> ((uint32_t)i * 2u)) & 3u;
+            uint16_t wc = punch.cur >= 0 ? sh_note_col((int32_t)((wv_ph / 2u + (uint32_t)y) % 27u)) : nt ? WC_WHT : lit ? RGB(0xff, 0x70, 0xe0) : RGB(0x30, 0x60, 0x90);
+            if (((uint32_t)y + h) % 3u != 1u) WFR(bx + 2, y, bw - 3, 1, wc);
+        }
+    }
+    for (x = 0; x < 240; x++) {                                        /* the mountains: a zigzag in pink */
+        int32_t m = 10 - ((x * 3) % 40 < 20 ? (x * 3) % 40 : 40 - (x * 3) % 40) / 2 - (x > 90 && x < 150 ? 0 : 4);
+        WFR(x, hy - m, 1, m, RGB(0x10, 0x04, 0x20)), WFR(x, hy - m, 1, 1, RGB(0xff, 0x40, 0xd0));
+    }
+    WFR(0, hy, 240, 240 - hy, RGB(0x08, 0x02, 0x14)), WFR(0, hy, 240, 2, RGB(0xff, 0x60, 0xe0));
+    for (i = 0; i < 12; i++) {                                         /* the grid: lines coming at us, rays from the middle */
+        int32_t z = 255 - (int32_t)(((uint32_t)i * 22u + (uint32_t)sp) % 256u), yy = hy + 2 + 2600 / (z + 24) - 10;
+        if (yy > hy && yy < 240) WFR(0, yy, 240, 1, wvf_hit_n > 2 ? RGB(0xff, 0x90, 0xff) : RGB(0xd0, 0x20, 0xc0));
+    }
+    for (i = -12; i <= 12; i++) wvf_pline(120 + i * 4, hy + 2, 120 + i * 40, 240, RGB(0xa0, 0x10, 0xa0));
+    {                                                                  /* the car, steered by the notes as along a line only it can see; its two trails */
+        int32_t tx, k = nk_top(nk_mask), cy = 166;
+        tx = k >= 0 ? clamp((k - 13) * 7, -80, 80) : sy_x * 7 / 8;
+        sy_x += (tx - sy_x) / 4;
+        for (i = 23; i > 0; i--) sy_path[i] = sy_path[i - 1], sy_col[i] = sy_col[i - 1];
+        sy_path[0] = sy_x, sy_col[0] = (uint8_t)(k < 0 ? sy_col[1] : k < 13 ? 0 : 1);
+        for (i = 1; i < 24; i++) {                                     /* (each step back is nearer us: lower and wider) */
+            int32_t y0 = cy + 6 + (i - 1) * 3, y1 = cy + 6 + i * 3, s0 = 240 + (i - 1) * 14, s1 = 240 + i * 14, w0 = 7 + (i - 1) / 2, w1 = 7 + i / 2, l;
+            uint16_t c = sy_col[i] ? RGB(0x40, 0xa0, 0xff) : RGB(0xff, 0x30, 0x50), c2 = sy_col[i] ? RGB(0xb0, 0xe8, 0xff) : RGB(0xff, 0xb0, 0xb8);
+            for (l = -1; l <= 1; l += 2) {
+                wvf_pline(120 + sy_path[i - 1] * s0 / 240 + l * w0, y0, 120 + sy_path[i] * s1 / 240 + l * w1, y1, c2);
+                wvf_pline(121 + sy_path[i - 1] * s0 / 240 + l * w0, y0, 121 + sy_path[i] * s1 / 240 + l * w1, y1, c);
+            }
+        }
+        x = 120 + sy_x;
+        WFR(x - 10, cy - 4, 21, 10, RGB(0x10, 0x10, 0x30)), WFR(x - 10, cy - 4, 21, 1, RGB(0x60, 0xf0, 0xff)), WFR(x - 10, cy - 4, 1, 10, RGB(0x60, 0xf0, 0xff)), WFR(x + 10, cy - 4, 1, 10, RGB(0x60, 0xf0, 0xff));
+        WFR(x - 7, cy - 10, 15, 6, RGB(0x60, 0xf0, 0xff)), WFR(x - 5, cy - 9, 11, 4, RGB(0x10, 0x10, 0x30));
+        WFR(x - 9, cy + 3, 4, 3, sy_col[0] ? RGB(0x60, 0xc0, 0xff) : RGB(0xff, 0x40, 0x50)), WFR(x + 6, cy + 3, 4, 3, sy_col[0] ? RGB(0x60, 0xc0, 0xff) : RGB(0xff, 0x40, 0x50));
+    }
+}
+/* ---- the lit city (NEO's): a sky, searchlights behind, far towers whose windows the bands light in colours, near towers in two faces with
+ * a ledge, antennas and water tanks, whose yellow windows rise in each column as bars of the spectrum (smoothed: it breathes, it does not
+ * flicker). Every scene with a city uses it */
+typedef struct { uint16_t sky0, sky1, beam, far, farw0, farw1, near, nearl, win, wind; } nc_pal_t;
+static const nc_pal_t NC_NEO = {RGB(0x06, 0x18, 0x26), RGB(0x14, 0x40, 0x56), RGB(0x58, 0x70, 0x48), RGB(0x10, 0x2c, 0x44), RGB(0xff, 0x60, 0xd0), RGB(0x60, 0xf0, 0xff),
+                                RGB(0x06, 0x12, 0x1e), RGB(0x10, 0x24, 0x34), RGB(0xff, 0xd8, 0x70), RGB(0x14, 0x1c, 0x24)};
+static const nc_pal_t NC_BLUE = {RGB(0x02, 0x02, 0x10), RGB(0x08, 0x10, 0x60), RGB(0x30, 0x40, 0x90), RGB(0x20, 0x3c, 0x60), RGB(0xff, 0xf0, 0xa0), RGB(0xc0, 0xd8, 0xff),
+                                 RGB(0x24, 0x48, 0x60), RGB(0x40, 0x70, 0x88), RGB(0xff, 0xe0, 0x40), RGB(0x10, 0x20, 0x30)};
+static const nc_pal_t NC_PURPLE = {RGB(0x28, 0x18, 0x70), RGB(0x80, 0x40, 0xb0), RGB(0x90, 0x60, 0xd0), RGB(0x50, 0x38, 0xa0), RGB(0xff, 0xa0, 0xe0), RGB(0xa0, 0xe0, 0xff),
+                                   RGB(0x30, 0x1c, 0x60), RGB(0x48, 0x2c, 0x84), RGB(0xd0, 0x90, 0xff), RGB(0x28, 0x18, 0x50)};
+static UI_NOINLINE void nc_spec(void) { uint32_t i; for (i = 0; i < 19u; i++) sp_s[i] = (uint8_t)(sp_s[i] + ((int32_t)wf_spec[i] - (int32_t)sp_s[i]) / 3); }
+static UI_NOINLINE void nc_tower(int32_t x, int32_t t, int32_t w, int32_t base, const nc_pal_t *p, uint32_t h, int32_t band)
+{
+    int32_t r, c, rows = (base - t - 6) / 6, lit = clamp((int32_t)sp_s[band % 19] * rows / 18 + (int32_t)(h % 3u), 0, rows);
+    WFR(x, t, w, base - t, p->near), WFR(x, t, w / 3, base - t, p->nearl);           /* two faces */
+    WFR(x - 1, t, w + 2, 2, p->nearl);                                                /* the ledge */
+    if (h & 1u) WFR(x + w / 2, t - 10, 1, 10, p->nearl), WFR(x + w / 2 - 1, t - 11, 3, 1, ((wv_ph / 8u + h) & 1u) ? RGB(0xff, 0x40, 0x40) : p->near);
+    if (h & 2u) WFR(x + w - 9, t - 6, 6, 6, p->nearl), WFR(x + w - 8, t - 8, 4, 2, p->nearl);
+    for (r = 0; r < rows; r++)
+        for (c = 0; c < (w - 4) / 5; c++) {
+            int on = rows - 1 - r < lit && ((uint32_t)(r * 3 + c) + h) % 5u != 0u;
+            WFR(x + 3 + c * 5, t + 5 + r * 6, 3, 3, on ? (c == 0 ? RGB(0xff, 0xf4, 0xc0) : p->win) : p->wind);
+        }
+}
+static UI_NOINLINE void nc_city(int32_t base, int32_t scroll, const nc_pal_t *p, int beams)
+{
+    int32_t i, r, c;
+    for (i = 0; i < base / 4 + 1; i++) {
+        int32_t t = i * 4 * 255 / base;
+        WFR(0, i * 4, 240, 4, RGB((((p->sky0 >> 11) & 31) * (255 - t) + ((p->sky1 >> 11) & 31) * t) / 255 << 3, (((p->sky0 >> 5) & 63) * (255 - t) + ((p->sky1 >> 5) & 63) * t) / 255 << 2,
+                                  ((p->sky0 & 31) * (255 - t) + (p->sky1 & 31) * t) / 255 << 3));
+    }
+    for (i = 0; i < 20; i++) cv_pset((int32_t)(pc_h((uint32_t)i * 17u) % 240u), (int32_t)(pc_h((uint32_t)i * 29u) % (uint32_t)(base / 2)), RGB(0xd0, 0xd8, 0xf0));
+    if (beams) for (i = 0; i < 3; i++) {                               /* searchlights: they sweep, faster with the beat */
+        int32_t bx = 50 + i * 70, sw = WV_SIN[(wv_ph * (1u + (uint32_t)(ev_rate > 40)) + (uint32_t)i * 20u) & 63u] * 70 / 127;
+        wvf_pline(bx, base, bx + sw, 0, p->beam), wvf_pline(bx + 1, base, bx + sw + 3, 0, p->beam);
+    }
+    for (i = -1; i < 13; i++) {                                        /* the far towers */
+        uint32_t h = pc_h((uint32_t)(i + scroll / 21 + 100) * 7u);
+        int32_t x = i * 21 - ((scroll % 21) + 21) % 21, hh = base / 2 + (int32_t)(h % (uint32_t)(base / 2)), t = base - 12 - hh / 2 - 30;
+        WFR(x, t, 19, base - t, p->far);
+        if (h % 5u == 0u) WFR(x + 9, t - 14, 1, 14, p->far);
+        for (r = 0; r < (base - t) / 6 - 1; r++) for (c = 0; c < 4; c++)
+            if (sp_s[(uint32_t)(i + r + c + 19) % 19u] > 6 && ((uint32_t)(r * 3 + c) + h) % 5u < 3u) WFR(x + 2 + c * 4, t + 4 + r * 6, 2, 3, (h + (uint32_t)r) % 3u == 0u ? p->farw0 : p->farw1);
+    }
+    for (i = -1; i < 7; i++) {                                         /* the near ones */
+        uint32_t h = pc_h((uint32_t)(i + scroll / 44 + 300) * 13u);
+        int32_t x = i * 44 - 10 - ((scroll % 44) + 44) % 44 + 44, hh = base / 4 + (int32_t)(h % (uint32_t)(base / 4));
+        nc_tower(x, base - hh, 36, base, p, h, i * 3 + 19);
+    }
+}
+static UI_NOINLINE void v2_neo(void)                                     /* NEO: the lit city, its street lamps */
+{
+    int32_t i;
+    nc_city(182, 0, &NC_NEO, 1);
+    WFR(0, 182, 240, 58, RGB(0x08, 0x0a, 0x10));
+    for (i = 0; i < 8; i++) { wvf_disk(14 + i * 30, 178, 5, RGB(0x14, 0x40, 0x28)); wvf_disk(14 + i * 30, 178, 2, sp_s[i * 2] > 9 ? WC_WHT : RGB(0x80, 0xff, 0xa0)); }
+    for (i = 0; i < 8; i++) WFR(10 + i * 30, 188 + (int32_t)(i & 1) * 18, 20, 2, RGB(0x30, 0x40, 0x30));   /* (the street's reflections) */
+}
+/* SMOKE: over someone's shoulder, the lit city ahead; the arm brings a cigarette up, its tip glowing, and the smoke rises, swaying with the
+ * music and puffing on the beat (black pixels, as the person on the bridge) */
+static int16_t sm_p[24][3];                    /* smoke: x, y (1/4 px), age */
+static UI_NOINLINE void v2_smoke(void)
+{
+    static const char *const SM_BODY[] = {"......XXXXX.......", ".....XXXXXXX......", "....XXXXXXXXX.....", "....XXXXXXXXX.....", "....XXXXXXXXX.....",
+        ".....XXXXXXX......", "......XXXXX.......", ".......XXX........", "....XXXXXXXXXX....", "..XXXXXXXXXXXXXX..", ".XXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXX"};
+    uint32_t cyc = wv_ph % 120u;                                       /* the arm: down, up to the mouth (a drag), down */
+    int32_t i, r, c, up = cyc < 20u ? (int32_t)cyc : cyc < 50u ? 20 : cyc < 70u ? 70 - (int32_t)cyc : 0, hx = 136, hy = 118;
+    int32_t tipx, tipy;
+    nc_city(196, 0, &NC_BLUE, 1);
+    WFR(0, 196, 240, 44, RGB(0x04, 0x06, 0x10));
+    for (i = 0; i < 12; i++) WFR(i * 20 + 4, 200 + (int32_t)(i & 1) * 6, 12, 1, RGB(0x60, 0x58, 0x30));
+    for (r = 0; r < 18; r++) for (c = 0; c < 18; c++) if (SM_BODY[r][c] == 'X') WFR(hx + c * 6, hy + r * 6 + (int32_t)((wv_ph / 30u) & 1u), 6, 6, RGB(0x02, 0x02, 0x06));
+    {                                                                  /* the arm: from the shoulder, the elbow out, the hand from the hip up to the mouth */
+        int32_t hxr = hx + 4, hyr = hy + 110, hxm = hx + 22, hym = hy + 34, ex = hx + 2 - up / 2, ey = hy + 96 - up;
+        tipx = hxr + (hxm - hxr) * up / 20, tipy = hyr + (hym - hyr) * up / 20;
+        for (i = 0; i < 5; i++) ne_line3(hx + 24 + i, hy + 66, ex + i, ey, RGB(0x02, 0x02, 0x06));
+        for (i = 0; i < 4; i++) ne_line3(ex + i, ey, tipx + 4 + i, tipy + 2, RGB(0x02, 0x02, 0x06));
+        wvf_disk(tipx + 6, tipy + 2, 6, RGB(0x02, 0x02, 0x06));
+        tipx -= 2;
+    }
+    WFR(tipx - 4, tipy, 8, 2, RGB(0xe0, 0xe0, 0xe0)), WFR(tipx - 6, tipy, 2, 2, cyc >= 20u && cyc < 50u ? RGB(0xff, 0xa0, 0x30) : RGB(0xd0, 0x40, 0x20));
+    for (i = 0; i < 24; i++) {                                         /* the smoke */
+        int16_t *q = sm_p[i];
+        if (!q[2]) {
+            if ((wv_ph + (uint32_t)i) % 6u == 0u || (wvf_hit_n == 5 && i % 3 == 0)) { q[0] = (int16_t)((tipx - 6) * 4), q[1] = (int16_t)(tipy * 4), q[2] = 1; }
+            else if (cyc >= 52u && cyc < 64u && i % 2 == 0) { q[0] = (int16_t)((hx + 14 - (int32_t)(cyc - 52u) * 2) * 4), q[1] = (int16_t)((hy + 36) * 4), q[2] = 8; }   /* the breath out, from the mouth */
+            continue;
+        }
+        q[2]++, q[1] = (int16_t)(q[1] - 3 - (int16_t)(ev_lvl / 60)), q[0] = (int16_t)(q[0] + WV_SIN[((uint32_t)q[2] * 4u + (uint32_t)i * 9u + wv_ph) & 63u] * (2 + wv_bass() / 4) / 127 - 1);
+        if (q[2] > 60 || q[1] < 0) { q[2] = 0; continue; }
+        {
+            int32_t rr = 1 + q[2] / 12, x = q[0] / 4, y = q[1] / 4, xx, yy;
+            for (yy = -rr; yy <= rr; yy++) for (xx = -rr; xx <= rr; xx++) if (xx * xx + yy * yy <= rr * rr && ((x + xx + y + yy) & 1)) cv_pset(x + xx, y + yy, q[2] < 30 ? RGB(0xb0, 0xb8, 0xc8) : RGB(0x70, 0x78, 0x90));
+        }
+    }
+}
+/* SKYLINE: a city in neon lines against a huge sun with bands, on a floor of tiles that mirrors it; someone stands there looking (after the
+ * synthwave city with the figure) */
+static UI_NOINLINE void v2_skyline(void)
+{
+    int32_t i, y, R = 70 + wv_bass() / 4, hy = 156;
+    for (y = 0; y < hy; y += 2) WFR(0, y, 240, 2, RGB(0x10 + y / 10, 0x08, 0x28 + y / 8));
+    for (i = 0; i < 60; i++) cv_pset((int32_t)(pc_h((uint32_t)i * 31u) % 240u), (int32_t)(pc_h((uint32_t)i * 13u) % (uint32_t)hy), sp_s[i % 19] > 9 ? WC_WHT : RGB(0x80, 0x70, 0xa0));
+    for (y = 96 - R; y < hy; y++) {                                    /* the sun */
+        int32_t dy = y - 96, hw = 0, t = (y - (96 - R)) * 255 / (2 * R);
+        while ((hw + 1) * (hw + 1) + dy * dy <= R * R) hw++;
+        if (dy > 20 && ((uint32_t)(y - (int32_t)(wv_ph / 3u)) % 10u) < (uint32_t)(dy / 14)) continue;
+        WFR(120 - hw, y, 2 * hw, 1, RGB(0xff, 0x40 + t / 2 > 0xd0 ? 0xd0 : 0x40 + t / 2, 0xa0 - t / 3 > 0x40 ? 0xa0 - t / 3 : 0x40));
+    }
+    for (i = 0; i < 16; i++) {                                         /* the towers in lines */
+        uint32_t h = pc_h((uint32_t)i * 7u + 3u);
+        int32_t bw = 12 + (int32_t)(h % 10u), x = 26 + i * 12 - bw / 3, bh = 30 + (int32_t)((h >> 4) % 70u) * (i > 3 && i < 12 ? 1 : 1) / (i > 3 && i < 12 ? 1 : 2), t = hy - bh, r;
+        uint16_t ln = RGB(0x80, 0xe8, 0xff);
+        WFR(x, t, bw, bh, RGB(0x18, 0x10, 0x38));
+        WFR(x, t, 1, bh, ln), WFR(x + bw - 1, t, 1, bh, ln), WFR(x, t, bw, 1, ln);
+        for (r = t + 4; r < hy - 2; r += 4) if (((uint32_t)r + h) % 3u != 0u) {
+            int32_t ht = hy - r, on = (int32_t)sp_s[(uint32_t)i * 19u / 16u] * 6 > ht / 2;
+            WFR(x + 2, r, bw - 4, 1, !on ? RGB(0x40, 0x60, 0x90) : ht < 30 ? RGB(0x60, 0xe8, 0xff) : ht < 60 ? RGB(0xff, 0x60, 0xd0) : ht < 85 ? RGB(0xff, 0xa0, 0x60) : RGB(0xff, 0xf0, 0x90));
+        }
+        if (h & 1u) WFR(x + bw / 2, t - 8, 1, 8, ln);
+    }
+    for (y = hy; y < 240; y++) {                                       /* the floor: the sun and the towers mirrored, lines of tiles */
+        int32_t d = y - hy, my = hy - d * 2 / 3 - 1;
+        uint16_t *row = cv_px + (uint32_t)(y - wf_ry) * 240u, *src = cv_px + (uint32_t)(my - wf_ry) * 240u;
+        int32_t x;
+        if (y < wf_ry || y >= wf_ry + wf_rh) continue;
+        if (my >= wf_ry && my < wf_ry + wf_rh) { for (x = 0; x < 240; x++) row[x] = swap16((swap16(src[(x + WV_SIN[((uint32_t)y * 6u + wv_ph * 2u) & 63u] / 60 + 240) % 240]) >> 1) & 0x7BEFu); }
+        else WFR(0, y, 240, 1, RGB(0x30, 0x20, 0x50));
+        if (d % ((d / 8) + 3) == 0) WFR(0, y, 240, 1, RGB(0x80, 0x40, 0x90));
+    }
+    for (i = -6; i <= 6; i++) wvf_pline(120 + i * 14, hy, 120 + i * 60, 240, RGB(0x80, 0x40, 0x90));
+    WFR(116, 196, 8, 28, RGB(0x06, 0x04, 0x0c)), wvf_disk(120, 192, 5, RGB(0x06, 0x04, 0x0c)), WFR(114, 200, 12, 14, RGB(0x06, 0x04, 0x0c));   /* someone */
+    WFR(116, 224, 3, 8, RGB(0x06, 0x04, 0x0c)), WFR(121, 224, 3, 8, RGB(0x06, 0x04, 0x0c));
+    for (i = 0; i < 8; i++) WFR(114 + (i & 1), 232 + i, 12, 1, RGB(0x10, 0x08, 0x18));
+}
+/* FALL: falling between lit towers (the city's windows, ledges, the searchlights behind), the haze pink below */
+static UI_NOINLINE void v2_fall(void)
+{
+    int32_t i, L, y, r, c;
+    uint32_t a = fall_y * 2u;
+    for (y = 0; y < 240; y += 4) WFR(0, y, 240, 4, RGB(0x30 + y / 2 > 0xf0 ? 0xf0 : 0x30 + y / 2, 0x18 + y / 6, 0x60 + y / 8));
+    for (i = 0; i < 3; i++) { int32_t bx = 70 + i * 50, sw = WV_SIN[(wv_ph + (uint32_t)i * 21u) & 63u] * 50 / 127; wvf_pline(bx, 240, bx + sw, 0, RGB(0xd0, 0x90, 0xd0)), wvf_pline(bx + 1, 240, bx + sw + 2, 0, RGB(0xd0, 0x90, 0xd0)); }
+    for (L = 0; L < 3; L++) {                                          /* towers: far and pale to near and dark; their windows rush up */
+        static const uint16_t TC[3] = {RGB(0xa0, 0x60, 0xa8), RGB(0x60, 0x30, 0x80), RGB(0x24, 0x10, 0x40)};
+        static const uint16_t TL[3] = {RGB(0xc0, 0x80, 0xc0), RGB(0x80, 0x48, 0xa0), RGB(0x40, 0x24, 0x60)};
+        int32_t sp = 1 + L * 2, w = 16 + L * 14, n = L == 2 ? 2 : 3;
+        for (i = 0; i < n; i++) {
+            int32_t x = L == 2 ? (i ? 240 - w + 4 : -4) : (i * 240 / n + L * 41 + 18) % 240 - 8, sc = (int32_t)((fall_y * (uint32_t)sp) % 12u);
+            if (L < 2 && x > 90 && x < 150) x += x < 120 ? -50 : 50;
+            WFR(x, 0, w, 240, TC[L]), WFR(x, 0, w / 3, 240, TL[L]);
+            for (r = -1; r < 21; r++) {
+                int32_t wy = r * 12 - sc, band = (r + i * 5 + L * 3 + 40) % 19;
+                WFR(x - 1, wy, w + 2, 1, TL[L]);                                  /* (a floor's ledge) */
+                for (c = 0; c < (w - 4) / 5; c++) if (((uint32_t)(r + c + i) + fall_y * (uint32_t)sp / 12u) % 4u != 0u)
+                    WFR(x + 3 + c * 5, wy + 4, 3, 4, (int32_t)sp_s[band] > 4 + c * 2 ? RGB(0xff, 0xe0, 0x90) : L == 2 ? RGB(0x50, 0x34, 0x70) : RGB(0xe0, 0xa8, 0xe0));
+            }
+        }
+    }
+    {                                                                  /* the one falling, turning */
+        int32_t cx = 120 + WV_SIN[(wv_ph) & 63u] * 14 / 127, cy = 104 + WV_SIN[(wv_ph * 2u + 9u) & 63u] * 6 / 127;
+        int32_t C = wv_sin4(a + 64u), S2 = wv_sin4(a);
+        uint16_t k = RGB(0x20, 0x10, 0x40);
+        ne_line3(cx - 8 * C / 127, cy - 8 * S2 / 127, cx + 8 * C / 127, cy + 8 * S2 / 127, k);
+        wvf_disk(cx - 12 * C / 127, cy - 12 * S2 / 127, 4, k);
+        ne_line3(cx + 8 * C / 127, cy + 8 * S2 / 127, cx + 16 * C / 127 - 6 * S2 / 127, cy + 16 * S2 / 127 + 6 * C / 127, k), ne_line3(cx + 8 * C / 127, cy + 8 * S2 / 127, cx + 16 * C / 127 + 5 * S2 / 127, cy + 16 * S2 / 127 - 5 * C / 127, k);
+        ne_line3(cx - 4 * C / 127, cy - 4 * S2 / 127, cx - 4 * C / 127 + 10 * S2 / 127, cy - 4 * S2 / 127 - 10 * C / 127, k), ne_line3(cx - 4 * C / 127, cy - 4 * S2 / 127, cx - 4 * C / 127 - 9 * S2 / 127, cy - 4 * S2 / 127 + 9 * C / 127, k);
+    }
+}
+/* DOOMSCROLL: someone on the bridge, phone in hand, its screen lighting the face in a new colour with every note; the sky above: clouds that
+ * come in from the sides with the notes (the left keys from the left), birds crossing at the height of their note, a shooting star on the kick */
+static int16_t dm_b[10][3], dm_c[8][3];        /* birds: x, y, dir (0 off); clouds: x, y, life */
+static uint8_t dm_col;
+static UI_NOINLINE void dm_cloud(int32_t cx, int32_t cy, int32_t s)
+{
+    static const int8_t PF[6][3] = {{0, 0, 9}, {10, -4, 10}, {20, 0, 8}, {-9, 2, 7}, {28, 3, 6}, {6, 4, 9}};
+    int32_t i;
+    for (i = 0; i < 6; i++) wvf_disk(cx + PF[i][0] * s / 8, cy + PF[i][1] * s / 8 + 2, PF[i][2] * s / 8, RGB(0xd0, 0x98, 0xc0));
+    for (i = 0; i < 6; i++) wvf_disk(cx + PF[i][0] * s / 8 - 1, cy + PF[i][1] * s / 8, PF[i][2] * s / 8 - 1, RGB(0xf8, 0xc8, 0xd8));
+    for (i = 0; i < 6; i++) wvf_disk(cx + PF[i][0] * s / 8 - 3, cy + PF[i][1] * s / 8 - 3, PF[i][2] * s / 8 / 2, RGB(0xff, 0xe8, 0xf0));
+}
+static UI_NOINLINE void dm_word(int32_t x, int32_t y);
+/* CHORDS: the chord you hold as the ratio of its frequencies (after the "chords as polygons" one): A minor is 10 : 12 : 15, so a 10-gon, a
+ * 12-gon and a 15-gon one inside the other; a light runs round each, as many corners a turn as its number, so they all meet at the top once a
+ * bar; each corner it passes rings. Two notes: their interval (a fifth, 2 : 3); one: the note and its octave. The name and the ratio above,
+ * the floor mirroring the lights. Let go: the last chord stays, dim, turning slowly */
+typedef struct { uint16_t mask; uint8_t n, r[4]; const char *name; } ch_tpl_t;
+static const ch_tpl_t CH_TPL[] = {
+    {0x489, 4, {10, 12, 15, 18}, "MINOR 7"}, {0x891, 4, {8, 10, 12, 15}, "MAJOR 7"}, {0x491, 4, {4, 5, 6, 7}, "7"},
+    {0x89, 3, {10, 12, 15}, "MINOR"}, {0x91, 3, {4, 5, 6}, "MAJOR"}, {0x49, 3, {5, 6, 7}, "DIM"}, {0x111, 3, {16, 20, 25}, "AUG"},
+    {0xA1, 3, {6, 8, 9}, "SUS4"}, {0x85, 3, {8, 9, 12}, "SUS2"},
+    {0x81, 2, {2, 3}, "FIFTH"}, {0x21, 2, {3, 4}, "FOURTH"}, {0x11, 2, {4, 5}, "THIRD"}, {0x09, 2, {5, 6}, "MINOR 3RD"}, {0x201, 2, {3, 5}, "SIXTH"},
+    {0x101, 2, {5, 8}, "MINOR 6TH"}, {0x05, 2, {8, 9}, "SECOND"}, {0x401, 2, {9, 16}, "MINOR 7TH"}, {0x801, 2, {8, 15}, "SEVENTH"}, {0x41, 2, {5, 7}, "TRITONE"},
+    {0x03, 2, {15, 16}, "HALF STEP"}, {0x01, 2, {1, 2}, "OCTAVE"}};
+static const char *const CH_NOTE[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+static int32_t ch_tpl = 3, ch_root = 9, ch_rings[10][4];
+static uint32_t ch_ph, ch_seg[4];
+static UI_NOINLINE void ch_find(uint32_t keys)
+{
+    uint32_t pcs = 0, k, best = 0;
+    int32_t t, root, bt = -1, br = 0;
+    for (k = 0; k < 27u; k++) if ((keys >> k) & 1u) pcs |= 1u << ((k + 5u) % 12u);   /* (key 0 is the F) */
+    if (!pcs) return;
+    for (root = 0; root < 12; root++) {
+        uint32_t rel;
+        if (!((pcs >> root) & 1u)) continue;
+        rel = ((pcs >> root) | (pcs << (12 - root))) & 0xFFFu;
+        for (t = 0; t < (int32_t)(sizeof CH_TPL / sizeof CH_TPL[0]); t++) {
+            uint32_t m = CH_TPL[t].mask, sc = (rel & m) == m ? (m == rel ? 100u : 10u) + CH_TPL[t].n : 0u;
+            if (sc > best) best = sc, bt = t, br = root;
+        }
+    }
+    if (bt >= 0) ch_tpl = bt, ch_root = br;
+}
+static UI_NOINLINE void v5_chords(void)
+{
+    static const uint16_t VC[4] = {RGB(0xc8, 0x98, 0xff), RGB(0xf0, 0xc0, 0x60), RGB(0x70, 0xe0, 0xff), RGB(0xff, 0x80, 0xc0)};
+    const ch_tpl_t *t;
+    int32_t i, v, lit = nk_mask != 0u, cx = 120, cy = 112, minor;
+    char b[24];
+    if (lit) ch_find(nk_mask);
+    t = &CH_TPL[ch_tpl], minor = t->mask == 0x89 || t->mask == 0x489 || t->mask == 0x49;
+    ch_ph += song.playing || lit ? (uint32_t)clamp(song.g[G_BPM], 40, 240) * 14u : 260u;   /* (a turn a bar when it plays; a slow drift when not) */
+    WFR(0, 0, 240, 240, C_BLACK);
+    wvf_disk(cx, cy, 104, minor ? RGB(0x0c, 0x06, 0x1c) : RGB(0x1c, 0x0e, 0x06)), wvf_disk(cx, cy, 70, minor ? RGB(0x14, 0x0a, 0x2c) : RGB(0x2a, 0x16, 0x08));
+    ne_ring(cx, 204, 3, RGB(0x20, 0x20, 0x30));
+    for (i = 0; i < 48; i++) { uint32_t an = (uint32_t)i * 16u / 3u; WFR(cx + 96 * wv_sin4(an + 64u) / 127, 204 + 12 * wv_sin4(an) / 127, 1, 1, RGB(0x40, 0x40, 0x58)); }   /* (the floor) */
+    for (v = 0; v < t->n; v++) {
+        int32_t n = t->r[v], R = 40 + v * (t->n == 4 ? 20 : t->n == 3 ? 26 : 34), k, px = 0, py = 0, x0 = 0, y0 = 0;
+        uint32_t f = (ch_ph & 0xFFFFu) * (uint32_t)n, seg = f >> 16, fr = f & 0xFFFFu;
+        uint16_t c = lit ? VC[v] : RGB(0x60, 0x58, 0x78);
+        if (n <= 1) { ne_ring(cx, cy, R, c); x0 = cx, y0 = cy - R; }   /* (one: a circle) */
+        else for (k = 0; k <= n; k++) {                                /* the polygon (two sides: a line across) */
+            uint32_t an = 192u + (uint32_t)(k % n) * 256u / (uint32_t)n;
+            int32_t x = cx + R * wv_sin4(an + 64u) / 127, y = cy + R * wv_sin4(an) / 127;
+            if (k) wvf_pline(px, py, x, y, c);
+            if (k < n) WFR(x - 1, y - 1, 2, 2, lit ? WC_WHT : c);
+            px = x, py = y;
+        }
+        if (n > 1) {                                                   /* its light, between the corners seg and seg + 1 */
+            uint32_t a0 = 192u + seg * 256u / (uint32_t)n, a1 = 192u + (seg + 1u) * 256u / (uint32_t)n;
+            int32_t xa = cx + R * wv_sin4(a0 + 64u) / 127, ya = cy + R * wv_sin4(a0) / 127, xb = cx + R * wv_sin4(a1 + 64u) / 127, yb = cy + R * wv_sin4(a1) / 127;
+            x0 = xa + (xb - xa) * (int32_t)(fr >> 8) / 256, y0 = ya + (yb - ya) * (int32_t)(fr >> 8) / 256;
+            if (seg != ch_seg[v]) {                                    /* a corner passed: it rings */
+                for (k = 0; k < 10; k++) if (!ch_rings[k][2]) { ch_rings[k][0] = xa, ch_rings[k][1] = ya, ch_rings[k][2] = 8, ch_rings[k][3] = v; break; }
+                ch_seg[v] = seg;
+            }
+        }
+        wvf_disk(x0, y0, lit ? 4 : 2, c), wvf_disk(x0, y0, lit ? 2 : 1, WC_WHT);
+        WFR(x0 - 1, 204 + (204 - y0) / 8, 3, 2, c);                    /* (its glint on the floor) */
+    }
+    for (i = 0; i < 10; i++) if (ch_rings[i][2]) { ne_ring(ch_rings[i][0], ch_rings[i][1], 3 + (8 - ch_rings[i][2]) * 2, lit ? VC[ch_rings[i][3] & 3] : RGB(0x50, 0x48, 0x68)); ch_rings[i][2]--; }
+    str_cpy(b, CH_NOTE[ch_root], 24);
+    str_cpy(b + str_len(b), " ", 24 - str_len(b)), str_cpy(b + str_len(b), t->name, 24 - str_len(b));
+    wf_textc(120, 8, 1, b, lit ? (minor ? RGB(0xd0, 0xb0, 0xff) : RGB(0xff, 0xd0, 0x90)) : RGB(0x70, 0x68, 0x88));
+    for (v = 0, b[0] = 0; v < t->n; v++) { if (v) str_cpy(b + str_len(b), " : ", 24 - str_len(b)); fmt_int(b + str_len(b), t->r[v]); }
+    wf_textc(120, 24, 0, b, RGB(0xa0, 0x98, 0xb8));
+}
+/* ORB: a ring on a string (after the "plasma in a ring" one, laid flat): a line across the screen, shaking with the sound, through a circle
+ * that fills from its rim inwards while the music plays (and empties again in the quiet) with water in a few blues and an orange glint.
+ * The notes drop into it on the rim (each key its place), the kick runs a wave along the string, the loop's beat pulses from the rim, an
+ * effect stirs a whirl. 60 x 60 cells of 4 px; the water's two heights in the picture memory (8 bits each) */
+#define OB_G 60
+#define OB_R 22
+static int32_t ob_fill = OB_R * 16, ob_sw, ob_flip;
+static uint32_t ob_lb;
+static UI_NOINLINE int32_t ob_d2(int32_t x, int32_t y) { return (x - OB_G / 2) * (x - OB_G / 2) + (y - OB_G / 2) * (y - OB_G / 2); }
+static UI_NOINLINE void ob_drop(int32_t x, int32_t y, int32_t v)
+{
+    int8_t *A = (int8_t *)wv_mem + (ob_flip ? OB_G * OB_G : 0);
+    int32_t i, j;
+    for (j = -1; j <= 1; j++) for (i = -1; i <= 1; i++)                /* (a round drop: the middle, and half around it) */
+        if (x + i > 0 && y + j > 0 && x + i < OB_G - 1 && y + j < OB_G - 1) { int32_t n = A[(y + j) * OB_G + x + i] + (i || j ? v / 2 : v); A[(y + j) * OB_G + x + i] = (int8_t)clamp(n, -127, 127); }
+}
+static UI_NOINLINE void orb_step(void)
+{
+    int8_t *A, *B;
+    int32_t x, y, k, it, r0, play = song.playing || ev_lvl > 12 || nk_mask;
+    uint32_t bt = wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u;
+    ob_fill += play ? -3 : 2;                                          /* (it fills while it plays, empties in the quiet) */
+    ob_fill = clamp(ob_fill, 0, OB_R * 16);
+    r0 = ob_fill / 16;
+    for (k = 0; k < 27; k++) if ((nk_on >> k) & 1u) {                 /* a note: a drop on the rim, at its key's place */
+        uint32_t an = (uint32_t)k * 256u / 27u + 192u;
+        ob_drop(OB_G / 2 + (OB_R - 2) * wv_sin4(an + 64u) / 127, OB_G / 2 + (OB_R - 2) * wv_sin4(an) / 127, 110);
+    }
+    if (wvf_hit_n == 5) for (x = OB_G / 2 - OB_R; x <= OB_G / 2 + OB_R; x += 2) ob_drop(x, OB_G / 2, (x & 2) ? 70 : -70);   /* the kick: along the string */
+    if (song.playing && bt != ob_lb) for (k = 0; k < 32; k++) { uint32_t an = (uint32_t)k * 8u; ob_drop(OB_G / 2 + (OB_R - 1) * wv_sin4(an + 64u) / 127, OB_G / 2 + (OB_R - 1) * wv_sin4(an) / 127, 36); }
+    ob_lb = bt;
+    if (punch.cur >= 0 || thr_req) { ob_sw += 14; ob_drop(OB_G / 2 + (OB_R * 2 / 3) * wv_sin4((uint32_t)ob_sw + 64u) / 127, OB_G / 2 + (OB_R * 2 / 3) * wv_sin4((uint32_t)ob_sw) / 127, 90); }
+    if (play && !(wv_ph % 11u)) ob_drop(OB_G / 2 - OB_R + (int32_t)(pc_h(wv_ph) % (uint32_t)(OB_R * 2)), OB_G / 2 - OB_R + (int32_t)(pc_h(wv_ph * 7u) % (uint32_t)(OB_R * 2)), 40);
+    for (it = 0; it < 2; it++) {                                       /* the water: each cell the mean of its four, less where it was, a little damped */
+        A = (int8_t *)wv_mem + (ob_flip ? OB_G * OB_G : 0), B = (int8_t *)wv_mem + (ob_flip ? 0 : OB_G * OB_G);
+        for (y = 1; y < OB_G - 1; y++) for (x = 1; x < OB_G - 1; x++) {
+            int32_t i = y * OB_G + x, d2 = ob_d2(x, y), n;
+            if (d2 > OB_R * OB_R || d2 < r0 * r0) { B[i] = 0; continue; }
+            n = ((A[i - 1] + A[i + 1] + A[i - OB_G] + A[i + OB_G]) >> 1) - B[i];
+            n -= n >> 5;
+            B[i] = (int8_t)clamp(n, -127, 127);
+        }
+        ob_flip ^= 1;
+    }
+}
+static UI_NOINLINE void orb_paint(void)
+{
+    const int8_t *A = (const int8_t *)wv_mem + (ob_flip ? OB_G * OB_G : 0);
+    int32_t x, y, r0 = ob_fill / 16, lv = clamp(ev_lvl / 4, 0, 40), tw = WV_SIN[(wv_ph / 2u) & 63u] / 3 + (int32_t)(wv_ph * 2u % 256u) / 8;
+    uint32_t q;
+    for (y = OB_G / 2 - OB_R; y <= OB_G / 2 + OB_R; y++) for (x = OB_G / 2 - OB_R; x <= OB_G / 2 + OB_R; x++) {
+        int32_t d2 = ob_d2(x, y), v, dx = x - OB_G / 2, dy = y - OB_G / 2, rr = 0, sx, sy, i;
+        uint32_t an;
+        uint16_t c;
+        if (d2 > OB_R * OB_R || d2 < r0 * r0) continue;
+        while ((rr + 1) * (rr + 1) <= d2) rr++;
+        an = (uint32_t)(tw * (OB_R - rr) / OB_R);                      /* (the whirl: the middle turned further than the rim) */
+        sx = OB_G / 2 + (dx * wv_sin4(an + 64u) - dy * wv_sin4(an)) / 127, sy = OB_G / 2 + (dx * wv_sin4(an) + dy * wv_sin4(an + 64u)) / 127;
+        sx = clamp(sx, 1, OB_G - 2), sy = clamp(sy, 1, OB_G - 2), i = sy * OB_G + sx;
+        v = (A[i] * 2 + A[i - 1] + A[i + 1]) / 4 + (A[i] - A[i - OB_G - 1]) / 2;   /* (the height and the slope: the light catching the waves) */
+        c = v < -8 ? RGB(0x06, 0x08, 0x34) : v < 12 ? RGB(0x14, 0x1c, 0x84) : v < 30 ? RGB(0x28, 0x40, 0xd0) : v < 50 ? RGB(0x70, 0x90, 0xff) : v < 72 ? RGB(0xff, 0xb0, 0x70) : WC_WHT;
+        if (r0 && d2 < (r0 + 1) * (r0 + 1)) c = (A[i] & 4) ? RGB(0xff, 0xb0, 0x70) : RGB(0x90, 0xb0, 0xff);   /* (the front of the water, lit) */
+        WFR(x * 4, y * 4, 4, 4, c);
+    }
+    for (q = 0; q < 160u; q++) {                                       /* the rim */
+        uint32_t an = q * 256u / 160u;
+        WFR(120 + 89 * wv_sin4(an + 64u) / 127, 120 + 89 * wv_sin4(an) / 127, 2, 2, RGB(0x40 + lv * 2, 0x60 + lv * 2, 0xff));
+    }
+    for (x = 0; x < 240; x += 2) {                                     /* the string, shaking with the sound */
+        int32_t sv = scope_buf[(scope_w - 240u + (uint32_t)x) & (SCOPE_N - 1u)], y1 = 120 + sv * (6 + lv / 4) / 12000;
+        WFR(x, y1 - 1, 2, 1, RGB(0x30, 0x40, 0xa0)), WFR(x, y1, 2, 1, RGB(0xa0, 0xb8, 0xff)), WFR(x, y1 + 1, 2, 1, RGB(0x30, 0x40, 0xa0));
+    }
+}
+/* DOOMSCROLL's phone: a feed of posts in a handful of pixels, scrolling for ever (each post fixed by its number: a sunset, mountains, a
+ * selfie, a quote, a cat, the city at night, a coffee; every third an AD), a double tap on a key likes the one in the middle; or the player */
+static int32_t dm_feed, dm_v, dm_hand = 100, dm_loop, dm_heart, dm_hpost = -1, dm_cpost;
+static int32_t dm_liked[6] = {-1, -1, -1, -1, -1, -1};
+static uint32_t dm_tap[27];
+static UI_NOINLINE void dm_photo(int32_t x, int32_t y, uint32_t h)
+{
+    static const uint16_t SK[4] = {RGB(0xff, 0x90, 0x60), RGB(0x70, 0xb0, 0xf0), RGB(0xe0, 0x80, 0xc0), RGB(0x60, 0xd0, 0xc0)};
+    uint16_t a = SK[h % 4u], d = RGB(0x24, 0x20, 0x38);
+    int32_t i, kind = (int32_t)((h >> 3) % 7u);
+    switch (kind) {
+    case 0: WFR(x, y, 80, 12, RGB(0xff, 0xc0, 0x60)), WFR(x, y + 12, 80, 10, a), wvf_disk(x + 40, y + 22, 8, RGB(0xff, 0xf0, 0xa0)), WFR(x, y + 22, 80, 12, RGB(0x30, 0x40, 0x80));
+        for (i = 0; i < 4; i++) WFR(x + 32 + (i & 1) * 4, y + 24 + i * 3, 16 - i * 3, 1, RGB(0xff, 0xe0, 0x90)); break;   /* a sunset on the sea */
+    case 1: WFR(x, y, 80, 34, a);
+        for (i = 0; i < 24; i++) WFR(x + 26 - i, y + 10 + i, i * 2 + 1, 1, i < 6 ? WC_WHT : d), WFR(x + 58 - i / 2, y + 16 + i * 3 / 4, i + 1, 1, RGB(0x40, 0x50, 0x70)); break;   /* mountains */
+    case 2: WFR(x, y, 80, 34, a), wvf_disk(x + 40, y + 14, 8, RGB(0xf0, 0xc0, 0xa0)), WFR(x + 32, y + 5, 16, 5, d), WFR(x + 28, y + 24, 24, 10, d),
+        WFR(x + 37, y + 13, 2, 2, d), WFR(x + 42, y + 13, 2, 2, d), WFR(x + 38, y + 18, 5, 1, RGB(0xc0, 0x50, 0x50)); break;   /* someone, a selfie */
+    case 3: WFR(x, y, 80, 34, d), WFR(x + 6, y + 4, 3, 4, a), WFR(x + 11, y + 4, 3, 4, a);
+        for (i = 0; i < 3; i++) WFR(x + 14 + (i == 2 ? 10 : 0), y + 12 + i * 6, i == 2 ? 32 : 52, 2, WC_WHT); break;   /* a quote */
+    case 4: WFR(x, y, 80, 34, RGB(0xf0, 0xd8, 0xb0)), wvf_disk(x + 40, y + 20, 10, d);
+        for (i = 0; i < 6; i++) WFR(x + 31 + i / 2, y + 6 + i, 3, 1, d), WFR(x + 46 - i / 2, y + 6 + i, 3, 1, d);
+        WFR(x + 35, y + 18, 3, 3, RGB(0xc0, 0xf0, 0x60)), WFR(x + 43, y + 18, 3, 3, RGB(0xc0, 0xf0, 0x60)); break;   /* a cat */
+    case 5: WFR(x, y, 80, 34, RGB(0x10, 0x10, 0x28));
+        for (i = 0; i < 8; i++) { int32_t bh = 10 + (int32_t)(pc_h(h + (uint32_t)i) % 20u), k; WFR(x + i * 10, y + 34 - bh, 9, bh, RGB(0x30, 0x30, 0x58)); for (k = 0; k < bh - 3; k += 4) WFR(x + i * 10 + 2 + (k & 4), y + 36 - bh + k, 2, 2, (pc_h(h + (uint32_t)(i * 9 + k)) & 1u) ? RGB(0xff, 0xd0, 0x60) : RGB(0x30, 0x30, 0x58)); }
+        break;                                                         /* the city at night */
+    default: WFR(x, y, 80, 34, RGB(0xc8, 0x90, 0x60)), wvf_disk(x + 40, y + 18, 11, WC_WHT), wvf_disk(x + 40, y + 18, 8, RGB(0x70, 0x40, 0x20)),
+        wvf_disk(x + 40, y + 18, 3, RGB(0xf0, 0xd0, 0xa0)), WFR(x + 51, y + 15, 5, 2, WC_WHT); break;   /* a coffee */
+    }
+}
+static UI_NOINLINE void dm_feedscr(int32_t fx, int32_t fy, int32_t fw, int32_t fh)
+{
+    static const char HT[6][8] = {".XX.XX.", "XXXXXXX", "XXXXXXX", ".XXXXX.", "..XXX..", "...X..."};
+    int32_t q, PH = 58;
+    WFR(fx, fy, fw, fh, RGB(0xf4, 0xf4, 0xf6));
+    for (q = -1; q < 3; q++) {
+        int32_t pidx = dm_feed / 3 / PH + q, y0 = fy + 10 + q * PH - (dm_feed / 3) % PH, k, liked;
+        uint32_t h = (pc_h((uint32_t)pidx * 2654435761u) & ~(7u << 3)) | (uint32_t)((((pidx * 3) % 7) + 7) % 7) << 3;   /* (the pictures take turns) */
+        if (y0 <= fy + fh / 2 && fy + fh / 2 < y0 + PH) dm_cpost = pidx;   /* (the one in the middle: a double tap likes it) */
+        for (k = 0, liked = 0; k < 6; k++) if (dm_liked[k] == pidx) liked = 1;
+        wvf_disk(fx + 6, y0 + 4, 3, (h & 2u) ? RGB(0xe0, 0x50, 0x90) : RGB(0x60, 0x90, 0xf0)), WFR(fx + 12, y0 + 3, 18 + (int32_t)(h % 14u), 2, RGB(0x40, 0x40, 0x48));
+        WFR(fx + 74, y0 + 4, 1, 1, RGB(0x40, 0x40, 0x48)), WFR(fx + 76, y0 + 4, 1, 1, RGB(0x40, 0x40, 0x48)), WFR(fx + 78, y0 + 4, 1, 1, RGB(0x40, 0x40, 0x48));
+        dm_photo(fx + 2, y0 + 9, h);
+        if (((pidx % 3) + 3) % 3 == 2) {                               /* every third post: an AD, a white box in the picture's corner */
+            WFR(fx + 2 + 80 - 4 - 15, y0 + 9 + 34 - 4 - 10, 15, 10, WC_WHT);
+            wf_text(fx + 2 + 80 - 4 - 13, y0 + 9 + 34 - 4 - 9, 0, "AD", RGB(0x20, 0x20, 0x28));
+        }
+        if (pidx == dm_hpost && dm_heart) {                            /* the double tap: a red heart pops over the picture */
+            int32_t z = dm_heart > 10 ? 2 + (14 - dm_heart) / 2 : 4, r, c, hx = fx + 42 - z * 7 / 2, hy = y0 + 26 - z * 3;
+            for (r = 0; r < 6; r++) for (c = 0; c < 7; c++) if (HT[r][c] == 'X') WFR(hx + c * z, hy + r * z, z, z, (dm_heart & 2) && dm_heart < 6 ? RGB(0xff, 0x90, 0xa0) : RGB(0xf0, 0x30, 0x50));
+        }
+        {                                                              /* the heart, the bubble, the arrow */
+            uint16_t hc = liked ? RGB(0xf0, 0x30, 0x50) : RGB(0x40, 0x40, 0x48);
+            int32_t hx = fx + 4, hy = y0 + 46;
+            WFR(hx, hy, 2, 2, hc), WFR(hx + 3, hy, 2, 2, hc), WFR(hx, hy + 1, 5, 2, hc), WFR(hx + 1, hy + 3, 3, 1, hc), WFR(hx + 2, hy + 4, 1, 1, hc);
+            ne_ring(fx + 13, hy + 2, 2, RGB(0x40, 0x40, 0x48)), wvf_pline(fx + 19, hy + 4, fx + 23, hy, RGB(0x40, 0x40, 0x48)), wvf_pline(fx + 19, hy, fx + 23, hy, RGB(0x40, 0x40, 0x48));
+            WFR(fx + 76, hy, 4, 5, RGB(0x40, 0x40, 0x48)), WFR(fx + 77, hy + 1, 2, 3, RGB(0xf4, 0xf4, 0xf6));
+        }
+        WFR(fx + 4, y0 + 53, 20 + (int32_t)((h >> 5) % 20u), 2, RGB(0x60, 0x60, 0x68));
+    }
+    WFR(fx, fy, fw, 9, WC_WHT), WFR(fx, fy + 9, fw, 1, RGB(0xd0, 0xd0, 0xd8));   /* the bar on top */
+    wf_text(fx + 3, fy + 1, 0, "feed", RGB(0x20, 0x20, 0x28));
+    WFR(fx + 66, fy + 3, 2, 2, RGB(0xf0, 0x30, 0x50)), WFR(fx + 69, fy + 3, 2, 2, RGB(0xf0, 0x30, 0x50)), WFR(fx + 66, fy + 4, 5, 2, RGB(0xf0, 0x30, 0x50)), WFR(fx + 67, fy + 6, 3, 1, RGB(0xf0, 0x30, 0x50));
+    wvf_pline(fx + 74, fy + 6, fx + 80, fy + 2, RGB(0x20, 0x20, 0x28)), wvf_pline(fx + 74, fy + 2, fx + 80, fy + 2, RGB(0x20, 0x20, 0x28));
+}
+static UI_NOINLINE void dm_player(int32_t fx, int32_t fy, int32_t fw, int32_t fh)
+{
+    char b[16];
+    int32_t i;
+    uint32_t sec = wf_secs();
+    WFR(fx, fy, fw, fh, RGB(0x20, 0x24, 0x30));
+    for (i = 0; i < 4; i++) WFR(fx + 2, fy + 2 + i * 2, fw - 4, 1, RGB(0xc0, 0xa0, 0x30));   /* the title bar, its stripes */
+    WFR(fx + 22, fy + 1, 40, 9, RGB(0x20, 0x24, 0x30)), wf_textc(fx + fw / 2, fy + 2, 0, "WINAMPFM", RGB(0xf0, 0xe0, 0x90));
+    WFR(fx + 4, fy + 14, fw - 8, 40, C_BLACK), WFR(fx + 4, fy + 14, fw - 8, 1, RGB(0x60, 0x68, 0x80));
+    fmt_int(b, (int32_t)(sec / 60u)), str_cpy(b + str_len(b), ":", 16 - str_len(b));
+    if (sec % 60u < 10u) str_cpy(b + str_len(b), "0", 16 - str_len(b));
+    fmt_int(b + str_len(b), (int32_t)(sec % 60u)), wf_text(fx + 8, fy + 17, 1, b, RGB(0x40, 0xf0, 0x60));
+    wf_text(fx + 8, fy + 30, 0, song.playing ? ">" : "II", RGB(0x40, 0xf0, 0x60));
+    for (i = 0; i < 12; i++) {                                         /* the little bars: the music's; nothing playing, a song of their own */
+        int32_t real = song.playing || ev_lvl > 10, hh = clamp(real ? (int32_t)sp_s[(uint32_t)i * 19u / 12u] : 8 + (WV_SIN[(wv_ph * (uint32_t)(3 + i % 4) + (uint32_t)i * 11u) & 63u] + WV_SIN[(wv_ph * 5u + (uint32_t)i * 23u) & 63u]) / 32, 0, 18);
+        WFR(fx + 44 + i * 3, fy + 50 - hh, 2, hh, hh > 13 ? RGB(0xf0, 0x40, 0x30) : hh > 8 ? RGB(0xf0, 0xd0, 0x40) : RGB(0x40, 0xf0, 0x60));
+    }
+    if (song.sel < NPART) trk_short_name(song.sel, b); else str_cpy(b, "DRUMS", 16);
+    wf_clx0 = fx + 5, wf_clx1 = fx + fw - 5;
+    wf_text(fx + fw - (int32_t)((wv_ph * 1u) % (uint32_t)(wf_tw(0, b) + fw)), fy + 58, 0, b, RGB(0x40, 0xf0, 0x60));
+    wf_clx0 = 0, wf_clx1 = 240;
+    WFR(fx + 4, fy + 70, fw - 8, 3, RGB(0x40, 0x44, 0x58)), WFR(fx + 4 + (int32_t)(sec % 60u) * (fw - 14) / 60, fy + 69, 6, 5, RGB(0xc0, 0xa0, 0x30));   /* the seek bar */
+    for (i = 0; i < 5; i++) {                                          /* prev, play, pause, stop, next */
+        uint16_t c = (i == 1 && song.playing) || (i == 2 && !song.playing) ? RGB(0x40, 0xf0, 0x60) : RGB(0xa0, 0xa8, 0xb8);
+        WFR(fx + 5 + i * 15, fy + 80, 13, 10, RGB(0x50, 0x54, 0x68)), WFR(fx + 9 + i * 15, fy + 83, 5, 4, c);
+    }
+    for (i = 0; i < 10; i++) WFR(fx + 5 + i * 7, fy + 100, 5, 4, i < clamp(ev_lvl / 20, 0, 10) ? RGB(0x40, 0xf0, 0x60) : RGB(0x30, 0x34, 0x44));   /* the volume, the level */
+}
+static UI_NOINLINE void v2_doom(void)
+{
+    int32_t i, y, k;
+    for (y = 0; y < 180; y += 3) { int32_t t = y * 255 / 180; WFR(0, y, 240, 3, RGB(0x70 + (0xf0 - 0x70) * t / 255, 0x88 + (0xb0 - 0x88) * t / 255, 0xe8 - (0xe8 - 0xd0) * t / 255)); }
+    for (i = 0; i < 22; i++) WFR((int32_t)(pc_h((uint32_t)i * 37u) % 240u), (int32_t)(pc_h((uint32_t)i * 23u) % 90u), 2, 2, (nk_mask >> (i % 27)) & 1u ? WC_WHT : RGB(0xc8, 0xc8, 0xff));
+    wvf_disk(212, 44, 10, RGB(0xff, 0xf4, 0xc0)), wvf_disk(217, 40, 9, RGB(0x86, 0x9c, 0xe8));
+    dm_cloud(40 + (int32_t)((wv_ph / 3u) % 300u) - 60, 132, 10), dm_cloud(190 - (int32_t)((wv_ph / 4u) % 300u) + 60, 120, 8);
+    for (k = 0; k < 27; k++) if ((nk_on >> k) & 1u) {                 /* a note: a bird at its height, and maybe a cloud from its side */
+        for (i = 0; i < 10; i++) if (!dm_b[i][2]) { dm_b[i][2] = (int16_t)(k < 13 ? 1 : -1); dm_b[i][0] = (int16_t)(k < 13 ? -10 : 250); dm_b[i][1] = (int16_t)(150 - k * 4); break; }
+        dm_col = (uint8_t)((dm_col + 1u) % 6u);
+        if ((pc_h(wv_ph + (uint32_t)k) & 3u) == 0u) for (i = 0; i < 8; i++) if (!dm_c[i][2]) { dm_c[i][0] = (int16_t)(k < 13 ? -40 : 280); dm_c[i][1] = (int16_t)(40 + (int32_t)(pc_h((uint32_t)k + wv_ph) % 80u)); dm_c[i][2] = (int16_t)(k < 13 ? 1 : -1); break; }
+    }
+    for (i = 0; i < 8; i++) if (dm_c[i][2]) {                          /* the clouds the notes sent drift across and out */
+        dm_c[i][0] = (int16_t)(dm_c[i][0] + dm_c[i][2]);
+        if (dm_c[i][0] < -60 || dm_c[i][0] > 300) { dm_c[i][2] = 0; continue; }
+        dm_cloud(dm_c[i][0], dm_c[i][1], 6);
+    }
+    for (i = 0; i < 10; i++) if (dm_b[i][2]) {                         /* the birds: two strokes, flapping */
+        int32_t x = dm_b[i][0], yy = dm_b[i][1], f = (int32_t)((wv_ph / 2u + (uint32_t)i) & 1u);
+        dm_b[i][0] = (int16_t)(x + dm_b[i][2] * 4);
+        if (x < -20 || x > 260) { dm_b[i][2] = 0; continue; }
+        wvf_pline(x - 4, yy - 2 + f * 4, x, yy, RGB(0x30, 0x28, 0x50)), wvf_pline(x, yy, x + 4, yy - 2 + f * 4, RGB(0x30, 0x28, 0x50));
+    }
+    if (wvf_hit_n) { int32_t sx = 200 - wvf_hit_n * 12; wvf_pline(sx, 30 + (5 - wvf_hit_n) * 5, sx + 10, 24 + (5 - wvf_hit_n) * 5, WC_WHT); }
+    dm_word(32, 8);
+    WFR(0, 180, 240, 60, RGB(0x2c, 0x2a, 0x48));                       /* the bridge, its rail */
+    WFR(0, 166, 240, 2, RGB(0x58, 0x58, 0x80));
+    for (i = 4; i < 240; i += 22) WFR(i, 166, 2, 14, RGB(0x58, 0x58, 0x80));
+    {                                                                  /* someone looking at the phone, a cat beside */
+        int32_t px = 168, py = 116, k, scroll, swipe;
+        uint16_t k2 = RGB(0x1c, 0x1a, 0x30), sc;
+        static int32_t was;
+        /* when it scrolls: while the hands play (and a moment after), and for two seconds after the loop starts; else the player */
+        if (nk_hand || nk_hon) dm_hand = 0; else if (dm_hand < 1000) dm_hand++;
+        if (song.playing && !was) dm_loop = 40;
+        was = song.playing;
+        if (dm_loop) dm_loop--;
+        scroll = dm_hand < 16 || dm_loop > 0;
+        if (nk_hon) dm_v = 9;
+        if (scroll) dm_feed += 3 + dm_v; else dm_v = 0;
+        if (dm_v > 0) dm_v--;
+        for (k = 0; k < 27; k++) if ((nk_hon >> k) & 1u) {             /* two quick taps on one key: the post in the middle is liked */
+            if (dm_tap[k] && fm1_ms - dm_tap[k] < 320u && fm1_ms - dm_tap[k] > 60u) {
+                dm_heart = 14, dm_hpost = dm_cpost, dm_tap[k] = 0;
+                for (swipe = 5; swipe > 0; swipe--) dm_liked[swipe] = dm_liked[swipe - 1];
+                dm_liked[0] = dm_cpost;
+            } else dm_tap[k] = fm1_ms;
+        }
+        if (dm_heart) dm_heart--;
+        sc = scroll ? RGB(0xf0, 0xf0, 0xf4) : RGB(0x40, 0xe0, 0x60);
+        { static const int8_t PS[8] = {-4, 18, 2, 20, -4, 27, 4, 27}; fg_man(px, py + 58, 8, 1, PS, k2); }   /* (the upper arms down: elbows bent) */
+        swipe = scroll ? (int32_t)((uint32_t)(dm_feed / 6) % 10u) : 4;  /* the other thumb, flicking up */
+        ne_line(164, 144, 151, 129, k2);                               /* the forearm up to the phone, close to the face */
+        {                                                              /* the phone in the hand, small, over the arm; beside, its screen big, lines between them as a zoom */
+            int32_t fx = 22, fy = 40, fw = 84, fh = 112, sx = 146, sy = 121, o0 = cv_cx0, o1 = cv_cy0, o2 = cv_cx1, o3 = cv_cy1, q;
+            WFR(sx - 1, sy - 1, 8, 12, k2);
+            if (scroll) for (q = 0; q < 4; q++) {                      /* its screen: only the colours going up */
+                static const uint16_t PC[4] = {RGB(0xff, 0x90, 0x60), RGB(0x70, 0xb0, 0xf0), RGB(0xe0, 0x80, 0xc0), RGB(0x60, 0xd0, 0xc0)};
+                int32_t yy = sy + q * 4 - (dm_feed / 3) % 4;
+                WFR(sx, yy < sy ? sy : yy, 6, yy < sy ? 4 - (sy - yy) : (yy + 4 > sy + 10 ? sy + 10 - yy : 4), (q + dm_feed / 12) & 1 ? RGB(0xf4, 0xf4, 0xf6) : PC[(uint32_t)(q + dm_feed / 12) % 4u]);
+            } else { WFR(sx, sy, 6, 10, RGB(0x20, 0x24, 0x30)); for (q = 0; q < 3; q++) WFR(sx + 1 + q * 2, sy + 9 - (int32_t)sp_s[(uint32_t)q * 6u] / 4 - 1, 1, 1 + (int32_t)sp_s[(uint32_t)q * 6u] / 4, RGB(0x40, 0xe0, 0x60)); }
+            ne_line(170, 146, 152, 134 - swipe, k2);                   /* the other hand on it */
+            wvf_pline(sx, sy - 1, fx + fw, fy, WC_WHT), wvf_pline(sx, sy + 10, fx + fw, fy + fh, WC_WHT);
+            WFR(fx - 3, fy - 3, fw + 6, fh + 6, k2);
+            cv_cx0 = fx, cv_cy0 = fy, cv_cx1 = fx + fw, cv_cy1 = fy + fh;
+            if (scroll) dm_feedscr(fx, fy, fw, fh); else dm_player(fx, fy, fw, fh);
+            cv_cx0 = o0, cv_cy0 = o1, cv_cx1 = o2, cv_cy1 = o3;
+        }
+        wvf_disk(px - 4, py, 3, sc);                                   /* its light on the face */
+        WFR(px + 18, py + 52, 12, 8, k2), WFR(px + 18, py + 48, 4, 4, k2), WFR(px + 26, py + 48, 2, 3, k2), WFR(px + 29, py + 56, 6, 2, k2);
+    }
+}
+/* DANCE: little people written in lines, as text and symbols; each takes a new pose on the beat when its band sounds; a clap (the drums'
+ * CLAP, from the keys or the loop): all of them clap once with it */
+static const char *const DN_POSE[13][3] = {{"\\O ", " I\\", "< \\"}, {" O)", "(I ", " ))"}, {" O ", "/I\\", "< >"}, {" O/", "<X ", "/ \\"}, {"  O", "///", "// "},
+    {"-O-", " / ", " 77"}, {" O/", "/I ", "/ >"}, {"(O ", " I)", "(( "}, {" O ", " V ", " X "}, {"\\O ", " X>", "/ \\"}, {"\\O/", " I ", "/ \\"},
+    {" O ", ">*<", "/ \\"}, {" O ", "< >", "/ \\"}};
+static uint8_t dn_pose[12], dn_last[12];
+/* DANCE: twelve little people, each one a band of the spectrum: a new pose when its band hits, a jump as high as it sounds, brighter
+ * with it; on the kick all of them throw their arms up; a light under each on the floor */
+static UI_NOINLINE void ne_dance(void)
+{
+    static const uint16_t DC[6] = {RGB(0xf0, 0xa0, 0x80), RGB(0xf8, 0xb0, 0x50), RGB(0xd8, 0xb8, 0x90), RGB(0xb8, 0x80, 0x40), RGB(0xe0, 0x98, 0x60), RGB(0xf0, 0x90, 0x78)};
+    static uint32_t lastbeat;
+    static int32_t clap;
+    uint32_t beat = wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u, i, r;
+    int up = wvf_hit_n > 2;
+    if (dr_hits & (1u << 3)) clap = 6;                                 /* (lane 3: the CLAP) */
+    else if (clap) clap--;
+    for (i = 0; i < 12u; i++) {
+        uint32_t lv = wf_spec[i * 19u / 12u];
+        if ((lv > 8u && dn_last[i] <= 8u) || (beat != lastbeat && lv > 5u)) dn_pose[i] = (uint8_t)((dn_pose[i] + 1u + i % 3u) % 10u);
+        dn_last[i] = (uint8_t)lv;
+    }
+    lastbeat = beat;
+    for (i = 0; i < 12u; i++) {
+        uint32_t lv = wf_spec[i * 19u / 12u];
+        int32_t x = 12 + (int32_t)(i % 4u) * 58, y = 14 + (int32_t)(i / 4u) * 74 - (int32_t)lv / 2;
+        uint16_t c = DC[(i * 7u) % 6u];
+        if (lv > 12u) c = RGB(0xff, 0xf0, 0xd0);
+        for (r = 0; r < 3u; r++) {
+            const char *p2 = DN_POSE[clap > 2 ? 11 : clap ? 12 : up ? 10 : dn_pose[i]][r];
+            int32_t c2;
+            for (c2 = 0; p2[c2]; c2++) dn_char(x + c2 * 14, y + (int32_t)r * 19, 5, p2[c2], c);
+        }
+        WFR(x + 6, 14 + (int32_t)(i / 4u) * 74 + 60, 30, 2, RGB(0x30, 0x20, 0x18)), WFR(x + 6, 14 + (int32_t)(i / 4u) * 74 + 60, (int32_t)lv * 30 / 24, 2, c);
+    }
+}
+/* DUEL: two little sword fighters of our own on a grey stage with a mirror floor (after the pixel duel reference): on guard to the
+ * tempo; on each kick one dashes through the other with a white slash, sparks where it lands, dust at its feet */
+static int32_t du_x[2] = {64, 176}, du_att = -1, du_t, du_who, du_clash, du_var;
+static UI_NOINLINE void du_man(int32_t x, int32_t fy, int32_t dir, int32_t pose, uint16_t hair, int32_t refl)   /* the shared figure, 72 px tall */
+{
+    static const int8_t DP[4][8] = {{-6, 18, 12, 6, -8, 27, 8, 27}, {-12, 4, 20, 2, -12, 24, 16, 24}, {-10, 10, 22, 0, -10, 26, 10, 26}, {-10, -4, 6, -10, -6, 27, 6, 27}};
+    static const int8_t SW[4][2] = {{22, -40}, {32, -8}, {44, -4}, {10, -30}};   /* the blade, from the front hand */
+    int32_t s = refl ? -9 : 9, hx = x + dir * DP[pose][2] * 9 / 8, hy = fy - 48 * s / 8 + DP[pose][3] * s / 8;
+    uint16_t body = refl ? RGB(0x60, 0x60, 0x68) : RGB(0x14, 0x18, 0x24), sw = refl ? RGB(0x90, 0x90, 0x98) : WC_WHT;
+    fg_man(x, refl ? fy + 1 : fy, s, dir, DP[pose], body);
+    if (!refl) WFR(x - 7, fy - 62, 14, 3, hair);                       /* (a headband: who is who) */
+    ne_line3(hx, hy, hx + dir * SW[pose][0], hy + SW[pose][1] * s / 9, sw);
+}
+static UI_NOINLINE void ne_duel(void)
+{
+    int32_t i, k, fy = 170, bob = (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u);
+    WFR(0, 0, 240, fy, RGB(0x7c, 0x7c, 0x80)), WFR(0, fy, 240, 90, RGB(0x4c, 0x4c, 0x50));
+    for (i = 0; i < 5; i++) WFR(30 + i * 48, 0, 1, fy, RGB(0x68, 0x68, 0x6c));
+    WFR(0, fy, 240, 1, RGB(0x40, 0xa0, 0x90));
+    {   /* who strikes: the left half of the keys moves the one on the left, the right half the one on the right; both together: they clash */
+        static int32_t lt = 99, rt = 99;
+        int32_t lf = du_x[0] < du_x[1] ? 0 : 1;
+        lt = nk_low(nk_on) ? 0 : lt + 1, rt = nk_high(nk_on) ? 0 : rt + 1;
+        if (!du_clash && du_att < 0) {
+            if (lt < 4 && rt < 4) du_clash = 1, lt = rt = 99;
+            else if (lt == 0) du_att = lf, du_t = 0, du_var = (int32_t)(pc_h(wv_ph) % 4u);
+            else if (rt == 0) du_att = lf ^ 1, du_t = 0, du_var = (int32_t)(pc_h(wv_ph * 3u) % 4u);
+            else if (wvf_hit_n == 5) { du_att = du_who; du_who ^= 1; du_t = 0; }
+        }
+    }
+    if (du_clash) {                                                    /* the clash: both rush in, the blades cross, sparks, both thrown back */
+        int32_t lf = du_x[0] < du_x[1] ? 0 : 1, c = du_clash++;
+        if (c < 4) du_x[lf] += (96 - du_x[lf]) / 2, du_x[lf ^ 1] += (144 - du_x[lf ^ 1]) / 2;
+        else if (c < 10) {
+            int32_t cy = fy - 60, r = 6 + (c - 4) * 6;
+            for (k = 0; k < 10; k++) { uint32_t an = (uint32_t)k * 26u + (uint32_t)c * 7u; ne_line(120, cy, 120 + r * wv_sin4(an + 64u) / 127, cy + r * wv_sin4(an) / 127, k & 1 ? RGB(0xff, 0xe0, 0x80) : WC_WHT); }
+            ne_ring(120, cy, r / 2 + 4, WC_WHT);
+        } else du_x[lf] += (64 - du_x[lf]) / 2, du_x[lf ^ 1] += (176 - du_x[lf ^ 1]) / 2;
+        if (c > 14) du_clash = 0, du_x[lf] = 64, du_x[lf ^ 1] = 176;
+    }
+    if (du_att >= 0) {                                                 /* the dash: through the other, a slash where they cross */
+        int32_t a = du_att, o = a ^ 1, dir = du_x[o] > du_x[a] ? 1 : -1;
+        du_t++;
+        if (du_t < 4) du_x[a] += dir * (du_var == 1 ? 26 : du_var == 3 ? 40 : 34);
+        if (du_t == 3) du_x[o] += dir * 14;
+        if (du_t >= 2 && du_t < 7) {
+            int32_t cx = (du_x[a] + du_x[o]) / 2, cy = fy - (du_var == 2 ? 14 : du_var == 3 ? 70 : 44), r = 24 + du_t * 5;
+            uint32_t base = du_var == 1 ? 140u : du_var == 2 ? (dir > 0 ? 200u : 40u) : (uint32_t)(dir > 0 ? 180 : 0);   /* (the cut's arc: across, down from above, low and flat, or from the air) */
+            for (k = 0; k < 12; k++) { uint32_t an = base + (uint32_t)k * 6u; ne_line(cx + r * wv_sin4(an + 64u) / 127, cy + (du_var == 1 ? r : r / 2) * wv_sin4(an) / 127, cx + r * wv_sin4(an + 70u) / 127, cy + (du_var == 1 ? r : r / 2) * wv_sin4(an + 6u) / 127, du_var == 3 ? RGB(0xff, 0xe0, 0x90) : WC_WHT); }
+            for (k = 0; k < 6; k++) { uint32_t an = (uint32_t)k * 43u + du_t * 9u; wvf_pline(cx, cy, cx + (8 + du_t * 3) * wv_sin4(an + 64u) / 127, cy + (8 + du_t * 3) * wv_sin4(an) / 127, WC_WHT); }
+            for (k = 0; k < 4; k++) wvf_disk(du_x[a] - dir * (6 + k * 7), fy - 2 - k, 3 - k / 2, RGB(0xe8, 0xe8, 0xe8));
+        }
+        if (du_t > 10) du_att = -1;
+        du_x[0] = clamp(du_x[0], 30, 210), du_x[1] = clamp(du_x[1], 30, 210);
+        if (du_t > 10 && (du_x[1] - du_x[0] < 60 && du_x[0] - du_x[1] < 60)) { du_x[0] = du_x[0] < du_x[1] ? 64 : 176; du_x[1] = du_x[0] == 64 ? 176 : 64; }
+    }
+    for (k = 0; k < 2; k++) {
+        int32_t dir = du_x[k ^ 1] > du_x[k] ? 1 : -1, pose = du_clash ? (du_clash < 10 ? 1 : 3) : du_att == k ? (du_t < 4 ? 1 : 2) : du_att == (k ^ 1) && du_t >= 3 && du_t < 7 ? 3 : 0;
+        int32_t lift = du_att == k && du_var == 3 && du_t < 6 ? 30 - (du_t - 3) * (du_t - 3) * 3 : du_att == k && du_var == 2 ? -10 : 0;   /* (the leap; the crouch) */
+        if (du_att == k && du_var == 1 && pose == 2) pose = 1;          /* (the overhead cut keeps the blade up) */
+        du_man(du_x[k], fy - (pose == 0 ? bob : 0) - (lift > 0 ? lift : 0) + (lift < 0 ? 4 : 0), dir, pose, k ? RGB(0xe8, 0xe8, 0xf0) : RGB(0xf0, 0x50, 0x90), 0);
+        du_man(du_x[k], fy, dir, pose, 0, 1);
+    }
+}
+/* BLUEPRINT: a robot's schematic, green lines on a blue grid (after the reference): every part lights with its band of the spectrum,
+ * cyan sights turn, a scan line runs down, red labels point at the parts with the device's numbers */
+static const int16_t BP_HALF[] = {120, 20, 132, 24, 138, 40, 132, 56, 120, 60, -1, -1, 120, 62, 150, 66, 160, 80, 156, 110, 140, 124, 120, 128, -1, -1,
+    164, 50, 192, 52, 198, 62, 196, 86, 186, 92, 166, 90, 160, 80, 160, 58, 164, 50, -1, -1, 186, 92, 198, 130, 206, 160, 196, 168, 184, 150, 172, 110,
+    -1, -1, 128, 128, 140, 140, 136, 156, 120, 160, -1, -1, 140, 150, 170, 170, 190, 220, 176, 238, 150, 238, 142, 200, 130, 170, 140, 150, -1, -1,
+    120, 40, 130, 38, 132, 46, 120, 48, -1, -1, 126, 80, 146, 80, 146, 96, 126, 96, 126, 80};
+static const uint8_t BP_BAND[9] = {17, 2, 6, 10, 0, 13, 18, 3, 1};   /* which band lights each part */
+static UI_NOINLINE void bp_label(int32_t x, int32_t y, int32_t tx, int32_t ty, const char *t, int32_t v)
+{
+    char b[16];
+    wvf_pline(x, y, tx, ty, RGB(0xff, 0xb0, 0x60));
+    WFR(tx, ty - 9, 44, 1, RGB(0xff, 0xb0, 0x60));
+    str_cpy(b, t, 16);
+    if (v >= 0) fmt_int(b + str_len(b), v);
+    wf_text(tx, ty - 17, 0, b, RGB(0xff, 0x30, 0x30));
+    WFR(tx, ty - 6, 20, 1, WC_LAB), WFR(tx, ty - 3, 30, 1, WC_LAB);
+}
+static UI_NOINLINE void ne_blueprint(void)
+{
+    int32_t i, part = 0, k;
+    uint32_t a = wv_ph * 3u;
+    WFR(0, 0, 240, 240, RGB(0x04, 0x08, 0x10));
+    for (i = 0; i < 12; i++) WFR(i * 20, 0, 1, 240, RGB(0x18, 0x34, 0x48)), WFR(0, i * 20, 240, 1, RGB(0x18, 0x34, 0x48));
+    WFR(0, (int32_t)((wv_ph * 4u) % 240u), 240, 1, RGB(0x30, 0x90, 0xb0));   /* the scan */
+    for (i = 0; i + 3 < (int32_t)(sizeof BP_HALF / sizeof BP_HALF[0]); i += 2) {
+        uint16_t c;
+        if (BP_HALF[i] < 0) { part++; continue; }
+        if (BP_HALF[i + 2] < 0) continue;
+        c = wf_spec[BP_BAND[part % 9]] > 9 ? RGB(0xc8, 0xff, 0x90) : RGB(0x40, 0xe0, 0x20);
+        ne_line(BP_HALF[i], BP_HALF[i + 1], BP_HALF[i + 2], BP_HALF[i + 3], c);
+        ne_line(240 - BP_HALF[i], BP_HALF[i + 1], 240 - BP_HALF[i + 2], BP_HALF[i + 3], c);
+    }
+    for (k = 0; k < 2; k++) { int32_t cx = k ? 80 : 160, cy = 196; ne_ring(cx, cy, 8, RGB(0x40, 0xe0, 0x20)); wvf_pline(cx - 5, cy + 5, cx + 5, cy - 5, RGB(0x40, 0xe0, 0x20)); }
+    {                                                                  /* the sights */
+        int32_t sx = 56, sy = 72;
+        ne_ring(sx, sy, 22, RGB(0x30, 0xc0, 0xf0)), ne_ring(sx, sy, 12 + wv_bass() / 4, RGB(0x30, 0xc0, 0xf0));
+        wvf_pline(sx - 30, sy, sx + 30, sy, RGB(0x30, 0xc0, 0xf0)), wvf_pline(sx, sy - 30, sx, sy + 30, RGB(0x30, 0xc0, 0xf0));
+        for (k = 0; k < 24; k++) { uint32_t an = a + (uint32_t)k * 4u; cv_pset(120 + 76 * wv_sin4(an + 64u) / 127, 120 + 76 * wv_sin4(an) / 127, RGB(0x30, 0xc0, 0xf0)); }
+        wvf_pline(120, 120, 120 + 76 * wv_sin4(a + 64u) / 127, 120 + 76 * wv_sin4(a) / 127, RGB(0x30, 0xc0, 0xf0));
+        wvf_pline(120, 70, 120, 100, RGB(0x30, 0xc0, 0xf0)), wvf_pline(114, 96, 126, 96, RGB(0x30, 0xc0, 0xf0));
+    }
+    bp_label(120, 30, 150, 14, "HEAD ", -1);
+    bp_label(136, 88, 176, 120, "CORE ", song.g[G_BPM]);
+    bp_label(60, 120, 8, 104, "ARM ", (int32_t)song.sel + 1);
+    bp_label(100, 210, 30, 232, "PWR ", clamp(wv_all() / 3, 0, 99));
+    if ((wv_ph / 8u) & 1u) WFR(6, 6, 10, 3, RGB(0x30, 0xc0, 0xf0));
+    for (k = 0; k < 4; k++) WFR(6, 12 + k * 4, 6 + (int32_t)(((uint32_t)k * 7u + wv_ph / 4u) % 14u), 1, RGB(0x30, 0xc0, 0xf0));
+}
+/* ---- the neon diagrams (after the wireframe references) */
+/* DATA: numbers on the left (they change with the bands), green dashes flying through the middle, an orange net on the right that the
+ * spectrum ripples; three white slabs underneath */
+static UI_NOINLINE void ne_data(void)
+{
+    int32_t i, j, x, y;
+    for (i = 0; i < 48; i++) {
+        char d[2] = {(char)('0' + (int32_t)((wv_ph / (2u + (uint32_t)(i % 3)) + (uint32_t)i * 7u + (uint32_t)wf_spec[i % 19]) % 10u)), 0};
+        x = 8 + (i % 6) * 13 + (i / 6) * 4, y = 70 + (i / 6) * 17 + (i % 6) * 3;
+        wf_text(x, y, 1, d, wf_spec[i % 19] > 10 ? NE_WHT : RGB(0x98, 0x98, 0xa8));
+    }
+    for (i = 0; i < 40; i++) {
+        x = 80 + (int32_t)(((uint32_t)i * 37u + wv_ph * 2u) % 80u), y = 50 + (int32_t)(((uint32_t)i * 23u) % 140u) + (x - 80) / 4;
+        WFR(x, y, 5, 1, NE_GRN), WFR(x + 2, y - 1, 3, 1, NE_GRN);
+    }
+    for (j = 0; j < 9; j++)                                            /* the net: 9 x 9 points, pushed by the bands */
+        for (i = 0; i < 9; i++) {
+            int32_t px = 140 + i * 10 + j * 2, py = 40 + j * 16 - i * 4 + (wf_spec[(i + j) % 19] - 8) / 2 + WV_SIN[((uint32_t)(i * 7 + j * 5) + wv_ph * 3u) & 63u] / 40;
+            int32_t qx = 140 + (i + 1) * 10 + j * 2, qy = 40 + j * 16 - (i + 1) * 4 + (wf_spec[(i + 1 + j) % 19] - 8) / 2 + WV_SIN[((uint32_t)((i + 1) * 7 + j * 5) + wv_ph * 3u) & 63u] / 40;
+            int32_t rx = 140 + i * 10 + (j + 1) * 2, ry = 40 + (j + 1) * 16 - i * 4 + (wf_spec[(i + j + 1) % 19] - 8) / 2 + WV_SIN[((uint32_t)(i * 7 + (j + 1) * 5) + wv_ph * 3u) & 63u] / 40;
+            if (i < 8) wvf_pline(px, py, qx, qy, NE_ORG);
+            if (j < 8) wvf_pline(px, py, rx, ry, NE_ORG);
+        }
+    for (i = 0; i < 3; i++) { x = 40 + i * 64, y = 214 - i * 26; ne_line(x, y, x + 40, y + 16, NE_WHT); ne_line(x, y, x + 6, y - 4, NE_WHT); ne_line(x + 6, y - 4, x + 46, y + 12, NE_WHT); ne_line(x + 40, y + 16, x + 46, y + 12, NE_WHT); }
+}
+/* LAB: a blue wire landscape (the spectrum's history) under an orange board: the wave, the left channel against the right (a Lissajous),
+ * a spring that bounces with the bass, the four tracks as bars, dotted numbers */
+static UI_NOINLINE void ne_lab(void)
+{
+    int32_t i, k, x, y, b = wv_bass();
+    for (k = 0; k < 12; k++) {                                         /* the board */
+        WFR(110 + k * 10, 20, 1, 120, RGB(0x80, 0x30, 0x10));
+        WFR(110, 20 + k * 10, 110, 1, RGB(0x80, 0x30, 0x10));
+    }
+    {
+        int32_t py = 60, s;
+        for (x = 0; x < 110; x++) { s = scope_buf[(scope_w - 220u + 2u * (uint32_t)x) & (SCOPE_N - 1u)]; y = 60 - s * 30 / 12000; if (x) wvf_pline(109 + x, py, 110 + x, y, NE_ORG); py = y; }
+    }
+    for (i = 0; i < 128; i++) {                                        /* the Lissajous */
+        int32_t l = scope_buf[(scope_w - 128u + (uint32_t)i) & (SCOPE_N - 1u)], r = scope_bufr[(scope_w - 128u + (uint32_t)i) & (SCOPE_N - 1u)];
+        WFR(100 + l * 26 / 12000, 140 + r * 26 / 12000, 2, 2, NE_ORG);
+    }
+    for (k = 0; k < 6; k++) {                                          /* the spring */
+        int32_t cy = 150 + k * (6 + b / 6);
+        for (i = 0; i < 16; i++) cv_pset(164 + 9 * WV_SIN[((uint32_t)i * 4u + 16u) & 63u] / 127, cy + 3 * WV_SIN[(uint32_t)i * 4u & 63u] / 127, NE_ORG);
+    }
+    for (k = 0; k < 4; k++) { int32_t h = (int32_t)trk_level((uint32_t)k) * 34 / 127; ne_box(182 + k * 9, 132 - h, 6, h, 0, NE_ORG); }
+    for (i = 0; i < 4; i++) for (k = 0; k < 9; k++) if (((uint32_t)k * 5u + (uint32_t)i * 3u + wv_ph / 6u) % 4u) WFR(76 + (k % 3) * 3 + (k / 3) * 1, 30 + i * 18 + (k / 3) * 3, 2, 2, NE_ORG);
+    for (k = 0; k < 12; k++) {                                         /* the landscape: rows of the history, isometric */
+        int32_t px = 0, py = 0;
+        for (i = 0; i < 19; i++) {
+            x = 10 + i * 9 + k * 5, y = 236 - k * 5 - i * 3 - wv_mem[(uint32_t)k * 19u + (uint32_t)i] * 2;
+            if (i) wvf_pline(px, py, x, y, RGB(0x40, 0x70, 0xf0));
+            if (k) wvf_pline(x, y, x - 5, y + 5 + (wv_mem[(uint32_t)k * 19u + (uint32_t)i] - wv_mem[(uint32_t)(k - 1) * 19u + (uint32_t)i]) * 2, RGB(0x30, 0x50, 0xc0));
+            px = x, py = y;
+        }
+    }
+}
+/* TESLA: a red wire sphere over a magenta grid; green lightning runs from it down to the floor, more with the sound */
+static UI_NOINLINE void ne_tesla(void)
+{
+    int32_t i, k, cx = 120, cy = 60, all = wv_all();
+    WFR(0, 0, 240, 240, RGB(0x24, 0x14, 0x20));
+    for (i = 0; i <= 10; i++) {                                        /* the floor */
+        wvf_pline(30 + i * 16, 120 + i * 4, 70 + i * 16, 210 + i * 4 - 40, RGB(0xc0, 0x40, 0xd0));
+        wvf_pline(30 + i * 4, 120 + i * 9, 190 + i * 4, 160 + i * 9 - 40, RGB(0xc0, 0x40, 0xd0));
+    }
+    ne_line(20, 136, 20, 204, NE_ORG), ne_line(20, 204, 60, 230, NE_ORG), ne_line(176, 96, 214, 120, NE_ORG), ne_line(214, 120, 214, 170, NE_ORG);
+    for (k = 0; k < 2 + all / 30 && k < 12; k++) {                     /* the lightning */
+        int32_t x = cx + (k - 5) * 3, y = cy + 14, tx = 50 + (int32_t)(((uint32_t)k * 53u + wv_ph * 7u) % 150u), ty = 140 + (int32_t)(((uint32_t)k * 31u) % 60u), n;
+        for (n = 1; n <= 8; n++) {
+            int32_t nx = x + (tx - x) / (9 - n) + (int32_t)(wvf_rnd() % 7u) - 3, ny = y + (ty - y) / (9 - n);
+            wvf_pline(x, y, nx, ny, RGB(0x90, 0xf0, 0x40));
+            x = nx, y = ny;
+        }
+    }
+    ne_ring(cx, cy, 18 + wv_bass() / 6, NE_RED);                       /* the sphere: rings turning */
+    for (k = 0; k < 4; k++) {
+        int32_t rx = (18 + wv_bass() / 6) * WV_SIN[((uint32_t)k * 16u + wv_ph * 2u) & 63u] / 127, py = cy - 18, j;
+        for (j = 1; j <= 16; j++) { int32_t y = cy - (18 + wv_bass() / 6) * WV_SIN[((uint32_t)j * 2u + 16u) & 63u] / 127, x = cx + rx * WV_SIN[(uint32_t)j * 2u & 63u] / 127;
+            int32_t ox = cx + rx * WV_SIN[(uint32_t)(j - 1) * 2u & 63u] / 127; wvf_pline(ox, py, x, y, NE_RED); py = y; }
+    }
+    wvf_pline(cx - 18, cy, cx + 18, cy, NE_RED);
+    for (k = 0; k < 6; k++) ne_box(14, 96 + k * 7 - (k < all / 40 ? 2 : 0), 18, 5, 0, NE_RED);
+    ne_box(60, 24, 34, 12, 0, NE_RED);
+}
+/* ---- the scenes (after the pixel-art ones): cells of 3 px from a palette of 16, each picture its own */
+static const uint16_t SC_MECHA[16] = {0, RGB(0x50, 0x80, 0x90), RGB(0x80, 0xa8, 0xa0), RGB(0xd8, 0xd8, 0xb8), RGB(0xa0, 0xa8, 0x98), RGB(0x68, 0x78, 0x74),
+    RGB(0x48, 0x58, 0x56), RGB(0xf0, 0xe8, 0xa0), RGB(0x30, 0x3c, 0x46), RGB(0x58, 0x68, 0x78), RGB(0xc8, 0xcc, 0xc0), RGB(0xe8, 0xc0, 0x40),
+    RGB(0xc0, 0x30, 0x30), RGB(0x60, 0xff, 0x90), RGB(0x40, 0x70, 0x38), RGB(0x10, 0x14, 0x18)};
+static const uint16_t SC_HANGAR[16] = {0, RGB(0x0c, 0x12, 0x1e), RGB(0x16, 0x20, 0x32), RGB(0x2a, 0x3a, 0x50), RGB(0x50, 0xd8, 0xff), RGB(0x1c, 0x50, 0x70),
+    RGB(0x44, 0x44, 0x1c), RGB(0x74, 0x72, 0x2c), RGB(0xa8, 0xa0, 0x50), RGB(0xff, 0x90, 0x20), RGB(0xff, 0x38, 0x10), RGB(0xe8, 0xc0, 0x30),
+    RGB(0x08, 0x08, 0x08), RGB(0x24, 0x22, 0x30), RGB(0x8a, 0x4a, 0x28), RGB(0xe8, 0xe8, 0xf0)};
+static const uint16_t SC_STATION[16] = {0, RGB(0x30, 0x60, 0xc0), RGB(0x50, 0x80, 0xd8), RGB(0x88, 0xb0, 0xf0), RGB(0xf0, 0xf4, 0xff), RGB(0x60, 0x68, 0x78),
+    RGB(0x38, 0x3c, 0x48), RGB(0xc8, 0xb0, 0x90), RGB(0x88, 0x70, 0x58), RGB(0x2a, 0x2a, 0x30), RGB(0xff, 0xf0, 0xa0), RGB(0x88, 0x80, 0x70),
+    RGB(0xe0, 0xc0, 0x40), RGB(0x40, 0x2c, 0x20), RGB(0xe8, 0x60, 0x20), RGB(0x20, 0x20, 0x30)};
+static UI_NOINLINE void sc_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t v) { int32_t i; wv_force = 1; for (i = 0; i < h; i++) wv_line(x, y + i, x + w - 1, y + i, v); wv_force = 0; }
+static UI_NOINLINE void sc_sky(uint32_t a, uint32_t b, uint32_t c, int32_t h)   /* three bands, dithered where they meet */
+{
+    int32_t x, y;
+    for (y = 0; y < h; y++) for (x = 0; x < WVF_N; x++) { int32_t t = y * 3 * 4 / h, k = t / 4, f = t % 4; uint32_t v = (k + ((x + y) % 4 < f ? 1 : 0)) == 0 ? a : (k + ((x + y) % 4 < f ? 1 : 0)) == 1 ? b : c; wv_mem[y * WVF_N + x] = (uint8_t)v; }
+}
+/* MECHA: a giant robot of our own among ruined towers, seen from below; its eyes light with the bass, the towers' windows with the bands */
+static UI_NOINLINE void sc_mecha(void)
+{
+    int32_t i, k, b = wv_bass(), hi = 0, lo = 0, dy, hx;
+    uint32_t beat = wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u;
+    for (i = 0; i < 9; i++) lo += wf_spec[i];
+    for (i = 10; i < 19; i++) hi += wf_spec[i];
+    dy = (int32_t)(beat & 1u) + b / 10, hx = clamp((hi - lo) / 30, -3, 3);   /* it sways on the beat, turns its head with the melody */
+    wvf_hits();
+    sc_sky(1, 2, 3, 60);
+    for (k = 0; k < 4; k++) { int32_t cx = (int32_t)((wv_ph * (1u + (uint32_t)wv_all() / 60u) / 3u + (uint32_t)k * 31u) % 110u) - 15, cy = 8 + k * 9; wv_disc(cx, cy, 5, 3); wv_disc(cx + 6, cy + 1, 4, 4); wv_disc(cx - 5, cy + 2, 3, 4); }
+    for (k = 0; k < 3; k++) {                                          /* the towers */
+        int32_t x = 44 + k * 13, top = 18 + k * 7, w = 11;
+        sc_rect(x, top, w, 80 - top, k == 1 ? 5 : 6);
+        for (i = 0; i < (80 - top) / 4; i++) { int32_t j; for (j = 0; j < 3; j++) sc_rect(x + 2 + j * 3, top + 3 + i * 4, 2, 2, wf_spec[(k * 6 + i + j) % 19] > 9 ? 7 : 15); }
+    }
+    sc_rect(0, 30 + dy, 30, 50, 8);                                     /* the robot: shoulder, head, crest */
+    sc_rect(2, 32 + dy, 14, 16, 10), sc_rect(4, 50 + dy, 22, 4, 9);
+    sc_rect(18 + hx, 14 + dy, 18, 20, 9), sc_rect(20 + hx, 16 + dy, 14, 10, 10), sc_rect(22 + hx, 26 + dy, 10, 6, 8);
+    wv_force = 1;
+    wv_line(27 + hx, 14 + dy, 18 + hx, 4 + dy, 11), wv_line(28 + hx, 14 + dy, 38 + hx, 4 + dy, 11), wv_line(27 + hx, 13 + dy, 19 + hx, 4 + dy, 11), wv_line(28 + hx, 13 + dy, 37 + hx, 4 + dy, 11);
+    wv_line(22 + hx, 22 + dy, 32 + hx, 22 + dy, b > 5 || ((wv_ph / 3u) & 1u) ? 13u : 12u), wv_line(22 + hx, 23 + dy, 32 + hx, 23 + dy, 12);
+    if (wvf_hit_n) {                                                   /* the beam: from its eyes into a tower, sparks */
+        int32_t tx = 50 + (int32_t)((wv_ph * 7u) % 24u), ty = 30 + (int32_t)((wv_ph * 3u) % 20u);
+        wv_line(32 + hx, 22 + dy, tx, ty, 13), wv_line(32 + hx, 23 + dy, tx, ty + 1, 3);
+        for (i = 0; i < 6; i++) wv_put(tx + (int32_t)(wvf_rnd() % 7u) - 3, ty + (int32_t)(wvf_rnd() % 7u) - 3, 7);
+    }
+    wv_force = 0;
+    sc_rect(28 + hx, 30 + dy, 4, 4, 12);
+    for (i = 0; i < 4; i++) sc_rect(6, 38 + i * 3 + dy, 8, 1, wf_spec[12 + i * 2] > 8 ? 13 : 11);   /* the shoulder's lights: the treble */
+    for (i = 0; i < 6; i++) wv_disc(64 + i * 4, 76 - (i & 1) * 2, 4, 14);
+}
+/* HANGAR: a robot's head in a dark hangar: girders with cyan lamps that the notes light, a crane's hook swinging in time, the visor glows */
+static UI_NOINLINE void sc_hangar(void)
+{
+    int32_t i, b = wv_bass(), hx = 58 + WV_SIN[(wv_ph * 2u) & 63u] * 4 / 127, hd;
+    static int32_t drop;
+    wvf_hits();
+    if (wvf_hit_n == 5) drop = 14;                                      /* the hook drops on the kick, then winds back up */
+    else if (drop) drop--;
+    hd = 22 + drop;
+    sc_rect(0, 0, 80, 80, 1);
+    sc_rect(0, 8, 80, 50, 2);
+    for (i = 0; i < 8; i++) { wv_force = 1; wv_line(i * 10, 4, i * 10 + 10, 10, 3); wv_line(i * 10 + 10, 4, i * 10, 10, 3); wv_force = 0; }
+    sc_rect(0, 3, 80, 1, 3), sc_rect(0, 10, 80, 1, 3);
+    for (i = 0; i < 19; i++) sc_rect(2 + i * 4, 12 + (i & 1) * 30, 1, 1, wf_spec[i] > 8 || (int32_t)((wv_ph / 2u) % 19u) == i ? 4 : 5);   /* the lamps: the bands, a chase */
+    wv_force = 1; wv_line(58, 10, hx, hd, 3); wv_force = 0;
+    sc_rect(hx - 4, hd, 9, 5, 7); for (i = 0; i < 4; i++) sc_rect(hx - 4 + i * 2, hd + 3, 1, 2, 11);
+    wv_disc(30, 46, 16, 7);                                            /* the head */
+    sc_rect(14, 46, 32, 16, 6), sc_rect(18, 40, 26, 4, 8);
+    sc_rect(20, 48, 22, 4, 12), sc_rect(22, 49, 18, 2, b > 8 ? 10u : 9u), sc_rect(22 + (int32_t)((wv_ph * 2u) % 16u), 49, 3, 2, 15);   /* the visor, a scan running */
+    if (wf_spec[16] > 8) for (i = 0; i < 5; i++) wv_put(50 + (int32_t)(wvf_rnd() % 6u), 50 + (int32_t)(wvf_rnd() % 6u), i & 1 ? 9u : 15u);   /* welding sparks on the treble */
+    wv_force = 1; wv_line(26, 32, 18, 18, 8), wv_line(27, 32, 20, 18, 8); wv_line(4, 40, 20, 44, 6), wv_line(4, 41, 20, 45, 6); wv_force = 0;
+    sc_rect(4, 38, 4, 4, 14);
+    sc_rect(48, 54, 32, 26, 6), sc_rect(48, 54, 32, 2, 8);
+    for (i = 0; i < 8; i++) sc_rect(i * 4, 66, 1, 14, 3);
+    sc_rect(0, 66, 30, 1, 3);
+    sc_rect(64, 46, 2, 8, 13), sc_rect(64, 44, 2, 2, 14);
+    for (i = 0; i < 5; i++) sc_rect(70 + (i & 1), 20 + i * 6, 1, 1, ((wv_ph / 5u + (uint32_t)i) % 3u) ? 5u : 4u);
+}
+/* STATION: a train station's platform under an arched roof (as the fighting games' stages): the lamps glow on the beat, the people on
+ * the platform nod to the tempo, a train pulls in on the kick */
+static int32_t sc_train = -1;
+static UI_NOINLINE void sc_station(void)
+{
+    int32_t i, k, beat = (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u);
+    sc_sky(3, 2, 1, 46);
+    for (k = 0; k < 2; k++) { int32_t cx = 50 + k * 18 - (int32_t)((wv_ph / 6u) % 30u); wv_disc(cx, 12 + k * 6, 3, 4); wv_disc(cx + 4, 13 + k * 6, 2, 4); }
+    sc_rect(0, 30, 52, 22, 7);                                          /* the building, its arched windows */
+    for (i = 0; i < 4; i++) { wv_disc(6 + i * 12, 38, 4, 8); sc_rect(2 + i * 12, 38, 9, 8, 8); }
+    for (k = 0; k < 5; k++) {                                          /* the roof: arches */
+        int32_t j, px = -1, py = 0;
+        for (j = 0; j <= 16; j++) { int32_t x = j * 4 - 8 + k * 6, y = 4 + k * 3 + (j - 8) * (j - 8) / 4; if (j) { wv_force = 1; wv_line(px, py, x, y, 5); wv_force = 0; } px = x, py = y; }
+    }
+    sc_rect(0, 2, 80, 2, 6);
+    for (i = 0; i < 5; i++) sc_rect(4 + i * 16, 20, 1, 32, 6);
+    sc_rect(0, 52, 80, 10, 11), sc_rect(0, 52, 80, 1, 12);
+    sc_rect(0, 62, 80, 18, 13);
+    for (i = 0; i < 3; i++) { sc_rect(14 + i * 26, 40, 1, 12, 9); sc_rect(13 + i * 26, 38, 3, 2, beat || wf_spec[i * 6] > 9 ? 10u : 9u); }
+    for (i = 0; i < 4; i++) { int32_t x = 20 + i * 13, y = 46 + (((uint32_t)beat + (uint32_t)i) & 1u) - wf_spec[i * 5] / 5; sc_rect(x, y, 2, 6, 15), sc_rect(x, y - 2, 2, 2, 15);
+        if (wf_spec[i * 5] > 10) sc_rect(x - 1, y - 1, 1, 2, 15), sc_rect(x + 2, y - 1, 1, 2, 15); }   /* (arms up when it is loud) */
+    if (wvf_hit_n == 5 && sc_train < 0) sc_train = 80;
+    if (sc_train >= 0) {
+        sc_rect(sc_train, 56, 60, 14, 14), sc_rect(sc_train, 58, 60, 2, 12);
+        for (i = 0; i < 6; i++) sc_rect(sc_train + 4 + i * 9, 61, 5, 3, 3);
+        sc_train -= 3;
+        if (sc_train < -70) sc_train = -1;
+    }
+}
+/* BLOCKS: a 1-bit estate of tower blocks; the windows light with the bands, the lamp post flickers on the kick, someone runs past */
+static UI_NOINLINE void sc_blocks(void)
+{
+    int32_t i, j, k, run = (int32_t)((wv_ph * 2u) % 120u) - 20;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    for (k = 0; k < 3; k++) {
+        static const int8_t BX[3][4] = {{0, 0, 26, 70}, {32, 12, 22, 46}, {60, 0, 20, 64}};   /* x, top, w, bottom */
+        int32_t x = BX[k][0], t = BX[k][1], w = BX[k][2], bt = BX[k][3];
+        for (j = t; j < bt; j++) wv_line(x, j, x + w - 1, j, 15);
+        for (j = t + 2; j < bt - 2; j += 4) for (i = x + 2; i < x + w - 2; i += 4) {
+            uint32_t on = wf_spec[(uint32_t)(i + j * 3 + k * 5) % 19u] > 9;
+            wv_force = 1; wv_line(i, j, i + 1, j, on ? 15u : 1u); wv_line(i, j + 1, i + 1, j + 1, on ? 15u : 1u); wv_force = 0;
+        }
+    }
+    for (j = 70; j < 80; j++) for (i = 0; i < 80; i++) if (((i * 7 + j * 13 + (int32_t)(wv_ph / 3u)) % 5) < 2) wv_put(i, j, 15);   /* the ground, dithered */
+    wv_force = 1;
+    wv_line(56, 28, 56, 76, 15), wv_line(56, 28, 62, 26, 15);
+    if (wvf_hit_n || ((wv_ph / 3u) % 7u)) wv_line(60, 27, 63, 27, 15);
+    wv_force = 0;
+    if (run > 0 && run < 80) { wv_line(run, 66, run, 72, 15); wv_line(run, 72, run - 2 + (int32_t)(wv_ph & 2u), 76, 15); wv_line(run, 72, run + 2 - (int32_t)(wv_ph & 2u), 76, 15); wv_put(run, 65, 15); }
+}
+/* ---- the half-tone ones (after the printed references): a picture of 0..15 per cell, printed as dots that grow with it */
+static UI_NOINLINE void ht_blob(int32_t cx, int32_t cy, int32_t r, int32_t lit)   /* a puff, lit from the top left */
+{
+    int32_t x, y;
+    for (y = -r; y <= r; y++) for (x = -r; x <= r; x++) {
+        int32_t d = x * x + y * y;
+        if (d > r * r || (uint32_t)(cx + x) >= WVF_N || (uint32_t)(cy + y) >= WVF_N) continue;
+        wv_put(cx + x, cy + y, (uint32_t)clamp(lit - (y + r) * 9 / (2 * r + 1) - (x + r) * 3 / (2 * r + 1) + d * 2 / (r * r + 1), 2, 15));
+    }
+}
+/* CLOUDS: a tower of cloud printed in cream dots on night blue, swelling with the bands; a moon, four-pointed stars that flash on the notes */
+static UI_NOINLINE void ht_clouds(void)
+{
+    static const int8_t C[11][3] = {{40, 72, 20}, {20, 66, 15}, {60, 64, 16}, {42, 52, 15}, {28, 44, 12}, {54, 42, 12}, {40, 32, 11}, {48, 22, 9},
+                                    {32, 24, 8}, {8, 76, 12}, {72, 76, 12}};
+    int32_t i, s = WV_SIN[(wv_ph) & 63u] / 60;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    for (i = 0; i < 11; i++) ht_blob(C[i][0], C[i][1] + s, C[i][2] + wf_spec[(i * 2) % 19] / 6, 15);
+    wv_disc(66, 9, 4, 14); wv_force = 1; wv_disc(68, 8, 4, 0); wv_force = 0;
+    for (i = 0; i < 9; i++) {
+        int32_t x = (int32_t)(((uint32_t)i * 29u + 5u) % 78u), y = (int32_t)(((uint32_t)i * 11u + 2u) % 20u), on = wf_spec[i * 2] > 9;
+        wv_put(x, y, 15); if (on) { wv_put(x - 1, y, 10); wv_put(x + 1, y, 10); wv_put(x, y - 1, 10); wv_put(x, y + 1, 10); }
+    }
+}
+/* HANDS: two hands reaching, printed in dots; between their fingers a light that grows with the volume and throws sparks on the kick */
+static UI_NOINLINE void ht_finger(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t r) { int32_t k; for (k = 0; k <= 8; k++) ht_blob(x0 + (x1 - x0) * k / 8, y0 + (y1 - y0) * k / 8, r, 11); }
+static UI_NOINLINE void ht_hands(void)
+{
+    int32_t i, x, y, lr = 6 + wv_all() / 30, cx = 38, cy = 44;
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    ht_finger(84, 6, 62, 24, 6), ht_blob(58, 28, 7, 12);                 /* the hand from above */
+    ht_finger(54, 30, 43, 38, 2), ht_finger(57, 33, 48, 42, 2), ht_finger(60, 34, 53, 43, 2), ht_finger(62, 33, 58, 41, 2);
+    ht_finger(-4, 76, 18, 62, 6), ht_blob(22, 58, 7, 12);               /* the hand from below */
+    ht_finger(24, 54, 31, 45, 2), ht_finger(27, 56, 35, 48, 2), ht_finger(29, 58, 38, 52, 2), ht_finger(17, 56, 19, 47, 2);
+    for (y = -lr; y <= lr; y++) for (x = -lr; x <= lr; x++) { int32_t d = x * x + y * y; if (d <= lr * lr) wv_put(cx + x, cy + y, (uint32_t)(15 - d * 12 / (lr * lr + 1))); }
+    if (wvf_hit_n) for (i = 0; i < 8; i++) wv_put(cx + (int32_t)(wvf_rnd() % 25u) - 12, cy + (int32_t)(wvf_rnd() % 25u) - 12, 15);
+}
+/* INDIGO: white dots on blue: a great wave curling round, thicker with the bass, its spray flying on the kick */
+static UI_NOINLINE void ht_indigo(void)
+{
+    int32_t i, a, b = wv_bass();
+    memset(wv_mem, 0, WVF_N * WVF_N);
+    for (a = 0; a < 200; a++) {                                        /* the curl: a spiral arm, thick at its foot */
+        uint32_t an = (uint32_t)a + wv_ph;
+        int32_t r = 34 - a / 8, th = 2 + (200 - a) / 30 + b / 6;
+        int32_t x = 36 + r * wv_sin4(an + 64u) / 127, y = 44 + r * wv_sin4(an) / 127;
+        for (i = 0; i < th; i++) wv_put(x + i * wv_sin4(an + 64u) / 127, y + i * wv_sin4(an) / 127, (uint32_t)clamp(15 - i * 10 / th, 3, 15));
+    }
+    for (i = 0; i < 80; i++) wv_put(i, 70 + WV_SIN[((uint32_t)i * 3u + wv_ph * 2u) & 63u] / 40, 12), wv_put(i, 74, 7), wv_put(i, 78, 9);
+    if (wvf_hit_n) for (i = 0; i < 14; i++) wv_put(50 + (int32_t)(wvf_rnd() % 26u), 20 + (int32_t)(wvf_rnd() % 30u), 15);
+}
+
+static const char *const KJ_SPR[31] = {".................................", "...............P.................", "..............PPP...MMMMMM.......", ".............PPMP..MMLLLLMM......", "............PPMMP.MMLLLLLLMM.....", "...........PPMMMPMMLLWKLLLLMM....", "..........PPMMMMMMMLLWKLLLLLLM...", ".........PPMMMMMMMDMMLLLLLLLLLM..", "........PPMMMMMMMDDDMMMMMLLLLLMM.", "........PMMMMMMMDDDMMMMMMMMTTTTT.", ".......PPMMMMMMDDDMMMMMMRRRRRRR..", ".......PMMMMMMDDDMMMMMMRRRRR.....", "......PPMMMMMDDDMMMMMMMRRRRRRR...", "......PMMMMMDDDMMMMMMMMMTTTTTTT..", ".....PPMMMMDDDMMMMMMMMMMMMMMMM...", ".....PMMMMDDDMMMMMMMMMMMMMMM.....", "....PPMMMDDDMMMMMLLLLMMMMMM......", "....PMMMDDDMMMMMLLLLLLMMMMMMM....", "...PPMMDDDMMMMMLLLLLLLLMMMMMMM...", "...PMMDDDMMMMMMLLLLLLLLMMDDMMMM..", "..PPMDDDMMMMMMMLLLLLLLLMMDMMKMM..", "..PMMDDMMMMMMMMMLLLLLLMMMDMMMM...", ".PPMDDMMMMMMMMMMMLLLLMMMMMDKK....", ".PMMDDMMMMMMMMMMMMMMMMMMMMM......", "PPMDDMMMMMMMMMMMMMMMMMMMMMM......", "PMMDDMMMMMMMMMMMMMMMMMMMMMM......", "PMDDMMMMMMMMMMMMMMMMMMMMMMM......", "MMDDMMMMMMMMMMMMMMMMMMMMMMM......", "MDDMMMMMMMMMMMMMMMMMMMMMMMM......", "MDDMMMMMMMMMMMMMMMMMMMMMMMM......", "DDMMMMMMMMMMMMMMMMMMMMMMMMM......"};
+static const char *const BX_G[30] = {"..........HHHH..........", ".........HHHHHH.........", ".........HSSSSS.........", ".........SSSSSS.........", ".........SSSSSSs........", "..........SSSSs.........", "..........ssss..........", "........SSSSSSSS........", ".......SSSSSSSSSSGGG....", "......SSSSSSSSSSGGGGG...", "......SSSSSSSSSSGGGGG...", ".....sSSSSSSSSGGGGGG....", ".....sSSSSSSSSSGGGG.....", ".....sSSSSSSSSSSs.......", "....GGGsSSSSSSSs........", "...GGGGGsSSSSSs.........", "...GGGGGsSSSSS..........", "....GGG.sSSSSS..........", "........BBBBBBB.........", "........BwBBBBB.........", "........BBBBBBBB........", "........BBBBBBBB........", "........SSS..SSS........", ".......SSS....SSS.......", ".......SSS....SSS.......", "......SSS......SSS......", "......sSS......SSs......", "......sS........Ss......", "......NNN.......NNN.....", ".....NNNN.......NNNN...."};
+static const char *const BX_J[30] = {"..........HHHH............", ".........HHHHHH...........", ".........HSSSSS...........", ".........SSSSSS...........", ".........SSSSSSs..........", "..........SSSSs...........", "..........ssss............", "........SSSSSSSSSSSSSGGGG.", ".......SSSSSSSSSSSSSGGGGGG", "......SSSSSSSSSS....GGGGGG", "......SSSSSSSSSS.....GGGG.", ".....sSSSSSSSSs...........", ".....sSSSSSSSSs...........", ".....sSSSSSSSSSs..........", "....GGGsSSSSSSSs..........", "...GGGGGsSSSSSs...........", "...GGGGGsSSSSS............", "....GGG.sSSSSS............", "........BBBBBBB...........", "........BwBBBBB...........", "........BBBBBBBB..........", ".......BBBBBBBBB..........", ".......SSS...SSS..........", "......SSS.....SSS.........", "......SSS......SSS........", ".....SSS.......SSS........", ".....sSS........SSs.......", ".....sS.........SSs.......", ".....NNN.........NNN......", "....NNNN.........NNNN....."};
+/* ---- the drawn ones */
+static UI_NOINLINE void spr_draw(const char *const *rows, int32_t nr, int32_t x, int32_t y, int32_t z, const char *keys, const uint16_t *cols)   /* a sprite: each letter of keys a colour */
+{
+    int32_t r, c;
+    for (r = 0; r < nr; r++)
+        for (c = 0; rows[r][c]; c++) {
+            const char *k = keys;
+            int32_t i = 0;
+            while (*k && *k != rows[r][c]) k++, i++;
+            if (*k) WFR(x + c * z, y + r * z, z, z, cols[i]);
+        }
+}
+/* KAIJU: a monster over the city (after the pixel one with the needle tower): teal sky, brown and orange blocks with cream windows, the tower
+ * with its orange saucer; the monster breathes with the beat, its plates glow as the bass builds, and on the kick it breathes a blue ray
+ * into the towers: they flash and shed bricks */
+static int32_t kj_ray;
+static UI_NOINLINE void v2_kaiju(void)
+{
+    static const uint16_t KC[8] = {RGB(0x96, 0xdc, 0xc8), RGB(0x34, 0x40, 0x3a), RGB(0x22, 0x2a, 0x26), RGB(0x54, 0x64, 0x5c), RGB(0xf0, 0xf0, 0xe6), RGB(0x0a, 0x0a, 0x0a), RGB(0xe8, 0xe0, 0xc8), RGB(0xc8, 0x3c, 0x28)};
+    static const uint16_t BC[5] = {RGB(0x5a, 0x34, 0x2c), RGB(0x2a, 0x2a, 0x2c), RGB(0xc8, 0x70, 0x40), RGB(0x80, 0x5c, 0x50), RGB(0x30, 0x48, 0x48)};
+    int32_t i, r, c, bob = (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u) * 2, glow = clamp(wv_bass() * 6, 0, 60);
+    uint16_t pc = RGB(0x96 + glow, 0xdc, 0xc8 + glow / 2 > 0xff ? 0xff : 0xc8 + glow / 2);
+    WFR(0, 0, 240, 240, RGB(0x00, 0x96, 0x96));
+    if (wvf_hit_n == 5) kj_ray = 12;
+    {                                                                  /* the needle tower */
+        int32_t tx = 150;
+        WFR(tx - 2, 60, 4, 160, RGB(0x80, 0xc8, 0xc0)), WFR(tx - 1, 40, 2, 20, RGB(0x20, 0x20, 0x20)), WFR(tx, 34, 1, 6, RGB(0xc0, 0x30, 0x20));
+        for (r = 0; r < 8; r++) WFR(tx - 22 + r, 60 + r, 44 - 2 * r, 1, r < 3 ? RGB(0xe8, 0x80, 0x30) : RGB(0xf0, 0xe0, 0xc0));
+        WFR(tx - 8, 120, 16, 2, RGB(0x80, 0xc8, 0xc0)), wvf_pline(tx - 6, 122, tx - 12, 220, RGB(0x80, 0xc8, 0xc0)), wvf_pline(tx + 6, 122, tx + 12, 220, RGB(0x80, 0xc8, 0xc0));
+    }
+    for (i = 0; i < 12; i++) {                                         /* the blocks */
+        uint32_t h = pc_h((uint32_t)i * 19u + 3u);
+        int32_t bx = 70 + i * 15 - (i > 4 ? 0 : 0), bw = 14 + (int32_t)(h % 10u), bh = 40 + (int32_t)((h >> 4) % 70u), t = 240 - bh, hit = kj_ray > 0 && i >= 6 && i <= 9;
+        uint16_t col = hit && (kj_ray & 2) ? RGB(0xf0, 0xf0, 0xff) : BC[h % 5u];
+        WFR(bx, t, bw, bh, col), WFR(bx, t, bw, 2, RGB(0x20, 0x20, 0x20));
+        for (r = 0; r < bh / 6 - 1; r++) for (c = 0; c < (bw - 2) / 4; c++) if (((uint32_t)(r + c) + h) % 4u != 0u) WFR(bx + 2 + c * 4, t + 4 + r * 6, 2, 2, (int32_t)sp_s[(uint32_t)(r + i) % 19u] > 9 ? RGB(0xff, 0xff, 0xe0) : RGB(0xf0, 0xe0, 0xc0));
+        if (hit && kj_ray > 6) for (c = 0; c < 4; c++) WFR(bx + (int32_t)(pc_h(wv_ph + (uint32_t)c) % (uint32_t)bw), t - (12 - kj_ray) * 3 - c * 4, 3, 3, BC[h % 5u]);
+    }
+    for (r = 0; r < 31; r++) for (c = 0; KJ_SPR[r][c]; c++) {          /* the monster: 3 px, its plates glowing */
+        char ch = KJ_SPR[r][c];
+        uint16_t col;
+        if (ch == '.') continue;
+        col = ch == 'P' ? pc : ch == 'M' ? KC[1] : ch == 'D' ? KC[2] : ch == 'L' ? KC[3] : ch == 'W' ? KC[4] : ch == 'K' ? KC[5] : ch == 'T' ? KC[6] : KC[7];
+        if (ch == 'R' && kj_ray) col = RGB(0x60, 0xd0, 0xff);
+        WFR(c * 4 - 6, 116 + r * 4 + bob, 4, 4, col);
+    }
+    if (kj_ray) {                                                      /* the ray */
+        int32_t x0 = 112, y0 = 158 + bob, w;
+        for (w = 0; w < 6; w++) wvf_pline(x0, y0 + w - 3, 190, 150 + w * 3 - 6, w == 2 || w == 3 ? RGB(0xe0, 0xf8, 0xff) : RGB(0x40, 0xa0, 0xf0));
+        for (i = 0; i < 10; i++) WFR(x0 + 10 + (int32_t)(pc_h(wv_ph * 3u + (uint32_t)i) % 80u), y0 - 10 + (int32_t)(pc_h(wv_ph + (uint32_t)i * 5u) % 24u), 2, 2, RGB(0x90, 0xe0, 0xff));
+        kj_ray--;
+    }
+}
+/* BOXER: a boxer in a ring (after the pixel boxing one): guard up, bouncing on the beat; a note on the left half throws the jab, on the right
+ * half the hook; the heavy bag swings when it lands; the crowd's flashes go off with the bands */
+static int32_t bx_t, bx_bag;
+static UI_NOINLINE void v2_boxer(void)
+{
+    static const uint16_t BCOL[9] = {RGB(0x28, 0x18, 0x10), RGB(0xc8, 0x88, 0x5c), RGB(0x9c, 0x64, 0x40), RGB(0x10, 0x08, 0x08), RGB(0xd8, 0x28, 0x28), RGB(0x30, 0x50, 0xc0), RGB(0xf8, 0xf8, 0xf8), RGB(0x18, 0x18, 0x20), RGB(0xd8, 0x28, 0x28)};
+    int32_t i, bob = (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u) * 3, sw;
+    char b[8];
+    WFR(0, 0, 240, 240, RGB(0x14, 0x12, 0x18));
+    for (i = 0; i < 90; i++) {                                         /* the crowd, its flashes */
+        int32_t x = (int32_t)(pc_h((uint32_t)i * 7u) % 240u), y = 10 + (int32_t)(pc_h((uint32_t)i * 13u) % 80u);
+        wvf_disk(x, y, 4, RGB(0x2a, 0x26, 0x30));
+        if (sp_s[i % 19] > 12 && (pc_h((uint32_t)i + wv_ph / 2u) & 7u) == 0u) WFR(x - 1, y - 1, 3, 3, WC_WHT);
+    }
+    WFR(0, 150, 240, 90, RGB(0xd0, 0xd0, 0xd8)), WFR(0, 150, 240, 3, RGB(0xa0, 0xa0, 0xb0));   /* the canvas, the ropes, the posts */
+    for (i = 0; i < 3; i++) WFR(0, 96 + i * 18, 240, 3, i == 0 ? RGB(0xd8, 0x30, 0x30) : i == 1 ? RGB(0xf0, 0xf0, 0xf0) : RGB(0x30, 0x50, 0xd0));
+    WFR(10, 90, 8, 64, RGB(0xd8, 0x30, 0x30)), WFR(222, 90, 8, 64, RGB(0x30, 0x50, 0xd0));
+    if (nk_low(nk_on)) bx_t = 1; else if (nk_high(nk_on)) bx_t = 101; else if (wvf_hit_n == 5 && !bx_t) bx_t = 1;
+    {                                                                  /* the bag: it swings when a punch lands */
+        int32_t bx0 = 182;
+        if (bx_t == 4 || bx_t == 104) bx_bag = 14;
+        sw = bx_bag * WV_SIN[(wv_ph * 6u) & 63u] / 127;
+        if (bx_bag) bx_bag--;
+        wvf_pline(bx0, 0, bx0 + sw / 3, 70, RGB(0x60, 0x60, 0x60));
+        WFR(bx0 - 14 + sw, 70, 28, 64, RGB(0x90, 0x24, 0x20)), WFR(bx0 - 14 + sw, 70, 6, 64, RGB(0xb0, 0x34, 0x30)), WFR(bx0 - 14 + sw, 84, 28, 2, RGB(0x50, 0x10, 0x10));
+    }
+    {                                                                  /* the boxer: guard, the jab or the hook */
+        int32_t jab = bx_t > 0 && bx_t < 8 && bx_t < 100, hook = bx_t > 100 && bx_t < 108;
+        spr_draw(jab || hook ? BX_J : BX_G, 30, 54 + (jab || hook ? 10 : 0), 84 + bob, 4, "HSsKGBwN", (const uint16_t[]){BCOL[0], BCOL[1], BCOL[2], BCOL[3], BCOL[4], BCOL[5], BCOL[6], BCOL[7]});
+        if (bx_t) { bx_t++; if (bx_t == 9 || bx_t == 109) bx_t = 0; }
+    }
+    WFR(6, 214, 64, 20, RGB(0x10, 0x10, 0x14)), wf_text(10, 218, 1, "ROUND", RGB(0xf0, 0xc0, 0x30)), fmt_int(b, (int32_t)(wf_secs() / 30u % 12u) + 1), wf_text(52, 218, 1, b, WC_WHT);
+    WFR(150, 214, 84, 20, RGB(0x10, 0x10, 0x14)), wf_text(154, 218, 1, "POWER", RGB(0xf0, 0xc0, 0x30));
+    for (i = 0; i < 8; i++) WFR(194 + i * 5, 218, 4, 10, i < clamp(ev_lvl / 25, 0, 8) ? RGB(0xff, 0x50, 0x40) : RGB(0x40, 0x20, 0x20));
+}
+/* HOUND: the dog in neon lines (it was the cow): when the music stops it puts its head down to its bowl and eats; when it plays it lifts it
+ * and nods to the beat. The sound goes in at its mouth and comes out at its tail as notes; inside it four things, each its own: a ring
+ * turning with the tempo, the four tracks as meters, the spectrum, a square wave as tall as the bass */
+static int32_t hd_head;                         /* 0 up .. 32 down at the bowl */
+static UI_NOINLINE void v2_hound(void)
+{
+    int32_t i, quiet = !nk_mask && ev_lvl < 12, nod = quiet ? 0 : (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u) * 4;
+    int32_t hx, hy, tail = WV_SIN[(wv_ph * (quiet ? 2u : 8u)) & 63u] * (quiet ? 4 : 10) / 127, chew = (int32_t)((wv_ph / 3u) & 1u);
+    hd_head += quiet ? (hd_head < 32 ? 2 : 0) : (hd_head > 0 ? -4 : 0);
+    if (hd_head < 0) hd_head = 0;
+    hx = 74 - hd_head / 3, hy = 92 + hd_head * 2 + nod;
+    ne_line(80, 104, 176, 104, NE_BRN), ne_line(176, 104, 186, 114, NE_BRN), ne_line(186, 114, 186, 140, NE_BRN), ne_line(186, 140, 176, 150, NE_BRN);   /* the body */
+    ne_line(176, 150, 80, 150, NE_BRN), ne_line(80, 150, 72, 140, NE_BRN), ne_line(72, 140, 72, 114, NE_BRN), ne_line(72, 114, 80, 104, NE_BRN);
+    for (i = 0; i < 4; i++) { static const int16_t LX[4] = {84, 104, 156, 174}; int32_t st = !quiet && ((wv_ph / 4u + (uint32_t)i) & 1u) ? 2 : 0; ne_line(LX[i], 150, LX[i] + st, 186, NE_BRN), ne_line(LX[i] + st, 186, LX[i] + st + 6, 186, NE_BRN); }
+    ne_line(184, 108, 198 + tail, 88 - (tail < 0 ? -tail : tail) / 2, NE_BRN);   /* the tail, wagging */
+    ne_line(80, 110, hx + 4, hy + 18, NE_BRN), ne_line(80, 124, hx + 6, hy + 24, NE_BRN);   /* the neck */
+    ne_line(hx, hy, hx - 24, hy + 4, NE_BRN), ne_line(hx - 24, hy + 4, hx - 32, hy + 14, NE_BRN), ne_line(hx - 32, hy + 14, hx - 24, hy + 20 + (quiet ? chew * 3 : 0), NE_BRN);   /* the head */
+    ne_line(hx - 24, hy + 20 + (quiet ? chew * 3 : 0), hx + 2, hy + 24, NE_BRN), ne_line(hx + 2, hy + 24, hx + 8, hy + 10, NE_BRN), ne_line(hx + 8, hy + 10, hx, hy, NE_BRN);
+    ne_line(hx - 2, hy + 2, hx + 4, hy + 22 + nod / 2, NE_PNK), ne_line(hx + 4, hy + 22 + nod / 2, hx + 10, hy + 18, NE_PNK);   /* the ear */
+    WFR(hx - 14, hy + 8, 3, 3, quiet ? NE_DIM : NE_BLU), WFR(hx - 33, hy + 12, 3, 3, NE_RED);
+    ne_line(26, 192, 64, 192, NE_GRN), ne_line(26, 192, 30, 200, NE_GRN), ne_line(64, 192, 60, 200, NE_GRN), ne_line(30, 200, 60, 200, NE_GRN);   /* the bowl */
+    for (i = 0; i < 6; i++) WFR(32 + i * 5, 188 - (i & 1) * 2 + (quiet && chew && i == 3 ? -3 : 0), 3, 3, NE_ORG);
+    ne_line(0, 202, 240, 202, NE_GRN);
+    if (!quiet) for (i = 0; i < 8; i++) { int32_t x = 4 + ((int32_t)(wv_ph * 3u) + i * 9) % 72; if (x < hx - 34) WFR(x, hy + 12 + WV_SIN[((uint32_t)x * 4u) & 63u] / 40, 3, 2, NE_BLU); }   /* the sound going in */
+    if (!quiet) for (i = 0; i < 5; i++) {                              /* and coming out at the tail, as notes */
+        int32_t d = (int32_t)((wv_ph * 2u + (uint32_t)i * 13u) % 60u), x = 200 + d, y = 84 - d / 2 + WV_SIN[((uint32_t)d * 6u + (uint32_t)i * 11u) & 63u] / 30;
+        WFR(x, y, 3, 3, i & 1 ? NE_PNK : NE_GRN), WFR(x + 2, y - 6, 1, 6, i & 1 ? NE_PNK : NE_GRN);
+    }
+    {                                                                  /* inside: four things, side by side */
+        uint32_t a = wv_ph * (uint32_t)(1 + clamp(song.g[G_BPM], 40, 240) / 60), q;
+        int32_t r = 6 + wv_bass() / 4, k;
+        ne_ring(96, 127, r, NE_BLU);
+        for (q = 0; q < 3u; q++) { uint32_t an = a + q * 85u; WFR(96 + r * wv_sin4(an + 64u) / 127 - 1, 127 + r * wv_sin4(an) / 127 - 1, 3, 3, WC_WHT); }
+        for (k = 0; k < 4; k++) { int32_t h = (int32_t)trk_level((uint32_t)k) * 30 / 127 * (trk[k].p[P_MUTE] ? 0 : 1) * (int32_t)(sp_s[k * 4] + 4) / 20; WFR(114 + k * 6, 142 - clamp(h, 1, 30), 4, clamp(h, 1, 30), k == 3 ? NE_RED : NE_PUR); }
+        for (k = 0; k < 8; k++) { int32_t h = clamp((int32_t)sp_s[k * 2 + 1], 1, 30); WFR(142 + k * 3, 142 - h, 2, h, k & 1 ? NE_RED : NE_GRN); }
+        for (k = 0; k < 3; k++) { int32_t xs = 168 + k * 5, hh = 3 + wv_bass() / 2; ne_line(xs, 132, xs, 132 - hh, NE_ORG), ne_line(xs, 132 - hh, xs + 3, 132 - hh, NE_ORG), ne_line(xs + 3, 132 - hh, xs + 3, 132, NE_ORG); }
+    }
+    { char b[8]; wf_text(10, 14, 1, "FREQ", NE_BLU), ne_gauge(24, 44, ne_frac(song.g[G_FILT], GP[G_FILT].min, GP[G_FILT].max), NE_BLU);
+      wf_text(196, 14, 1, "BPM", NE_PUR), fmt_int(b, song.g[G_BPM]), ne_num(186, 28, 22, song.g[G_BPM], NE_GRN); (void)b; }
+}
+static UI_NOINLINE void wt_make(uint32_t n, int back, uint32_t spin);
+static UI_NOINLINE void wt_quad(int32_t cx, int32_t cy, int32_t w0, int32_t h0, uint32_t a, int32_t shade, int32_t bs);
+/* TAPE: the tape of the sound on the track, big, floating in the TAPES room: it sways, the notes nudge it round (left keys one way, right
+ * keys the other) but it turns at a calm pace whatever comes in, its reels spin while it plays, it rises and settles with the bass */
+static int32_t tp_ang, tp_tgt, tp_bob;
+static UI_NOINLINE void v2_tape_step(void)
+{
+    uint32_t tot, a;
+    if (nk_on) tp_tgt = 14;                                            /* a note: a pulse */
+    else if (tp_tgt) tp_tgt--;
+    tp_ang++;                                                          /* round and round, as on a select screen: a turn every ~3 s */
+    tp_bob += (wv_bass() * 2 - tp_bob) / 6;
+    a = (uint32_t)tp_ang & 63u;
+    wt_make(preset_pos(&tot), ((a + 16u) & 63u) >= 32u, song.playing ? fm1_ms / 55u : 0u);
+}
+static UI_NOINLINE void v2_tape(void)
+{
+    static const uint8_t BY[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+    static const uint16_t G[5] = {RGB(0x7a, 0x70, 0x90), RGB(0x5c, 0x48, 0x82), RGB(0x40, 0x28, 0x6c), RGB(0x2a, 0x14, 0x4c), RGB(0x16, 0x08, 0x2a)};
+    int32_t x, y, i;
+    char nm[14];
+    for (y = wf_ry & ~1; y < wf_ry + wf_rh; y += 2) {                  /* the room: a soft light above, a dithered purple, the grid floor */
+        int32_t f = y * 4 * 16 / 240, band = f / 16, fr = f % 16;
+        for (x = 0; x < 240; x += 2) WFR(x, y, 2, 2, G[clamp(band + (BY[((y >> 1) & 3) * 4 + ((x >> 1) & 3)] < (uint32_t)fr ? 1 : 0), 0, 4)]);
+    }
+    for (i = 0; i < 8; i++) WFR(0, 180 + i * i, 240, 1, RGB(0x60, 0x40, 0x98));
+    for (i = -8; i <= 8; i++) cv_line(120 + i * 12, 180, 120 + i * 40, 240, RGB(0x60, 0x40, 0x98));
+    wt_quad(120, 104 - tp_bob / 2 + WV_SIN[(wv_ph * 2u) & 63u] / 40, 180 + tp_tgt * 2, 113 + tp_tgt, (uint32_t)tp_ang & 63u, 0, 2);
+
+    if (song.sel < NPART) trk_short_name(song.sel, nm); else str_cpy(nm, "DRUMS", 14);
+    wf_textc(120, 214, 1, nm, WC_WHT);
+}
+/* TARGET, BLUEPRINT: more of them moves with the music */
+static uint8_t tg_fl[6];
+static UI_NOINLINE void v2_target(void)
+{
+    int32_t k, r = 92 + wv_bass();
+    ne_target();
+    for (k = 0; k < 27; k++) if ((nk_on >> k) & 1u) tg_fl[k % 6] = 8;
+    for (k = 0; k < 6; k++) {                                          /* the corners flash with the notes */
+        uint32_t an = (uint32_t)k * 256u / 6u;
+        int32_t x = 120 + r * wv_sin4(an + 64u) / 127, y = 124 + r * wv_sin4(an) / 127, s = tg_fl[k];
+        if (s) { ne_line(x - s, y, x, y - s, RGB(0xff, 0xf0, 0x60)), ne_line(x, y - s, x + s, y, RGB(0xff, 0xf0, 0x60)), ne_line(x + s, y, x, y + s, RGB(0xff, 0xf0, 0x60)), ne_line(x, y + s, x - s, y, RGB(0xff, 0xf0, 0x60)); tg_fl[k]--; }
+    }
+    for (k = 0; k < 3; k++) { uint32_t an = wv_ph * (uint32_t)(1 + clamp(song.g[G_BPM], 40, 240) / 60) + (uint32_t)k * 85u; wvf_disk(120 + 74 * wv_sin4(an + 64u) / 127, 124 + 74 * wv_sin4(an) / 127, 2, RGB(0x60, 0xe0, 0xff)); }
+    if (wvf_hit_n > 2) { WFR(96, 196, 48, 12, RGB(0xff, 0x30, 0x20)), wf_textc(120, 199, 1, "LOCK", WC_WHT); }
+}
+static UI_NOINLINE void v2_blueprint(void)
+{
+    int32_t k, tx = nk_top(nk_mask);
+    ne_blueprint();
+    ne_ring(120, 88, 6 + wv_bass() / 2, RGB(0x60, 0xff, 0x60));          /* the core */
+    for (k = 0; k < 2; k++) WFR(110 + k * 14, 72, 6, 3, (nk_mask >> (k * 13)) & 1u || ((wv_ph / 6u) & 1u) ? RGB(0xff, 0x40, 0x40) : RGB(0x60, 0x10, 0x10));   /* the eyes */
+    if (tx >= 0) { int32_t sx = 20 + tx * 7; ne_ring(sx, 210, 7, RGB(0x30, 0xc0, 0xf0)), wvf_pline(sx, 200, sx, 220, RGB(0x30, 0xc0, 0xf0)); }   /* a sight on the note */
+    if (wvf_hit_n > 1) { WFR(176, 6, 58, 14, RGB(0xff, 0x30, 0x30)), wf_textc(205, 9, 1, "ALERT", WC_WHT); }
+}
+/* the dancing dog's clip: still while nothing plays (it plays when the music does), its size following the notes */
+static int32_t dg_sz = 220;
+static UI_NOINLINE void dog_paint(uint32_t clip, int32_t y0, int32_t hh)
+{
+    const vp_clip_t *c;
+    int32_t y, x, sz = dg_sz;
+    if (clip >= (uint32_t)VP_N) return;
+    c = &VP_CLIPS[clip];
+    for (y = y0; y < y0 + hh; y++) {
+        uint16_t *row = cv_px + (uint32_t)(y - y0) * 240u;
+        int32_t v = c->h / 2 + (y - 130) * c->h / sz;
+        if ((uint32_t)v >= c->h) continue;
+        for (x = 0; x < 240; x++) { int32_t u = c->w / 2 + (x - 120) * c->w / sz; if ((uint32_t)u < c->w) row[x] = swap16(c->pal[VP_AT((uint32_t)(v * c->w + u))]); }
+    }
+}
+/* ---- v3 */
+/* FLOW's effect: while a performance effect (or a throw) is on, the FX block glows and blinks and a new block hangs off it, showing what the
+ * effect does: echoes for the echo, shrinking for the fade, a blink at the loop's length, a turning arrow backwards for reverse and rewind,
+ * bars with a band cut for the filters and the kills, steps for crush, chops for the gate, a sway for the wobbles, ice for freeze */
+static UI_NOINLINE void fl_fx(void)
+{
+    int32_t fx = punch.cur, t = (int32_t)wv_ph, i, x = 150, y = 196, w = 70, h = 26;
+    const char *nm = fx >= 0 ? PUNCH_NAME[fx] : (thr_req & 2u) ? "ECHO THROW" : (thr_req & 1u) ? "REV THROW" : 0;
+    uint16_t c = RGB(0xff, 0x90, 0x30);
+    if (!nm) return;
+    if ((t / 3) & 1) WFR(67, 73, 33, 17, RGB(0x80, 0x40, 0x10)), WFR(121, 141, 31, 17, RGB(0x80, 0x40, 0x10));   /* the FX blocks blink */
+    ne_box(66, 72, 34, 18, "FX", c), ne_box(120, 140, 32, 18, "FX", c);
+    ne_line(136, 158, 136, 180, c), ne_line(136, 180, x + w / 2, 180, c), ne_line(x + w / 2, 180, x + w / 2, y, c);   /* the wire to it */
+    for (i = 0; i < 5; i++) WFR(136 + ((t * 3 + i * 8) % 40 < 20 ? 0 : 0), 158 + (t * 2 + i * 6) % 22, 2, 2, WC_WHT);
+    if (fx < 0 ? (thr_req & 2u) != 0u : fx == PX_ECHO) {               /* echoes moving out, fainter */
+        for (i = 3; i >= 1; i--) { int32_t o = i * 10 + (t % 10); ne_box(x + o, y - o / 3, w, h, 0, i == 1 ? RGB(0xb0, 0x60, 0x20) : i == 2 ? RGB(0x70, 0x40, 0x18) : RGB(0x40, 0x24, 0x10)); }
+    } else if (fx < 0) {                                               /* the reverb throw: rings opening */
+        for (i = 0; i < 3; i++) ne_ring(x + w / 2, y + h / 2, 8 + ((t * 2 + i * 12) % 36), RGB(0x60, 0xc0, 0xff));
+    } else if (fx == PX_FADE) {                                        /* fading: it shrinks and dims, again and again */
+        int32_t k = (t % 30), ww = w * (30 - k) / 30, hh2 = h * (30 - k) / 30;
+        x += (w - ww) / 2, y += (h - hh2) / 2, w = ww, h = hh2 > 6 ? hh2 : 6, c = RGB(0xff - k * 6, 0x90 - k * 4, 0x30);
+    } else if (fx <= PX_LOOP32 || fx == PX_STUT || fx == PX_LOOP8T) { if ((t / (fx == PX_STUT ? 1 : 2 + fx)) & 1) c = WC_WHT; }
+    else if (fx == PX_REV || fx == PX_RWD) { uint32_t an = (uint32_t)(1000 - t * 12); ne_line(x + w / 2, y + h / 2, x + w / 2 + 10 * wv_sin4(an + 64u) / 127, y + h / 2 + 10 * wv_sin4(an) / 127, WC_WHT); }
+    else if (fx == PX_FREEZE) c = RGB(0xa0, 0xf0, 0xff);
+    else if (fx == PX_OCT) y -= (t / 2) & 1 ? 8 : 0;
+    else if (fx == PX_WOBBLE || fx == PX_FLANGE || fx == PX_PAN) x += WV_SIN[((uint32_t)t * 6u) & 63u] * 12 / 127;
+    else if (fx == PX_GATE) { if ((t / 2) & 1) return; }
+    ne_box(x, y, w, h, 0, c);
+    if (fx == PX_CRUSH || fx == PX_DOWN) for (i = 0; i < 8; i++) WFR(x + 4 + i * 8, y + h - 4 - (i % 4) * 4, 8, 2, c);
+    else if ((fx >= PX_LPF && fx <= PX_TEL) || (fx >= PX_KLOW && fx <= PX_KHIGH)) {
+        int32_t cut = fx == PX_KLOW || fx == PX_HPF ? 0 : fx == PX_KMID || fx == PX_TEL ? 1 : 2;
+        for (i = 0; i < 9; i++) { int32_t band = i * 3 / 9, hh2 = band == cut ? 2 : 4 + (int32_t)sp_s[i * 2] / 2; WFR(x + 6 + i * 7, y + h - 3 - clamp(hh2, 2, h - 6), 4, clamp(hh2, 2, h - 6), band == cut ? RGB(0x40, 0x20, 0x10) : c); }
+    } else if (fx == PX_FREEZE) { ne_line(x + w / 2 - 6, y + h / 2, x + w / 2 + 6, y + h / 2, c), ne_line(x + w / 2, y + 6, x + w / 2, y + h - 6, c), ne_line(x + w / 2 - 4, y + 9, x + w / 2 + 4, y + h - 9, c); }
+    wf_textc(x + w / 2, y - 10, 0, nm, c);
+}
+static UI_NOINLINE void v3_flow(void) { ne_flow(); fl_fx(); }
+/* TARGET in 3D: the hexagons turn round their upright, the box and the ball inside them; the ring is the spectrum as bars that flash white
+ * when a note of their range sounds */
+static int32_t tg_yaw;
+static UI_NOINLINE void tg_proj(int32_t x, int32_t y, int32_t *ox, int32_t *oy)
+{
+    int32_t c = wv_sin4((uint32_t)tg_yaw + 64u), s2 = wv_sin4((uint32_t)tg_yaw), X = x * c / 127, Z = x * s2 / 127;
+    *ox = 120 + X * 220 / (220 + Z / 2), *oy = 124 + y * 220 / (220 + Z / 2);
+}
+static UI_NOINLINE void tg_hex(int32_t r, uint16_t col, int dash, int spec)
+{
+    int32_t k, j;
+    for (k = 0; k < 6; k++) {
+        uint32_t a0 = (uint32_t)k * 256u / 6u + 21u, a1 = (uint32_t)(k + 1) * 256u / 6u + 21u;
+        int32_t x0 = r * wv_sin4(a0 + 64u) / 127, y0 = r * wv_sin4(a0) / 127, x1 = r * wv_sin4(a1 + 64u) / 127, y1 = r * wv_sin4(a1) / 127;
+        for (j = 0; j < 12; j++) {
+            int32_t ax, ay, bx, by, px = x0 + (x1 - x0) * j / 12, py = y0 + (y1 - y0) * j / 12, qx = x0 + (x1 - x0) * (j + 1) / 12, qy = y0 + (y1 - y0) * (j + 1) / 12;
+            if (dash && (j & 1)) continue;
+            tg_proj(px, py, &ax, &ay), tg_proj(qx, qy, &bx, &by);
+            ne_line(ax, ay, bx, by, col);
+            if (spec) { int32_t l = 100 + (int32_t)sp_s[(uint32_t)(k * 12 + j) % 19u] * 3, ex, ey; tg_proj(px * l / 100, py * l / 100, &ex, &ey); wvf_pline(ax, ay, ex, ey, col); }
+        }
+    }
+}
+static UI_NOINLINE void v3_target(void)
+{
+    static const int8_t V[8][3] = {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}};
+    static const uint8_t E[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    int32_t i, px[8], py[8], b;
+    uint32_t a = wv_ph * 2u;
+    char t[20];
+    tg_yaw += 1 + clamp(song.g[G_BPM], 40, 240) / 80;
+    WFR(0, 0, 240, 240, RGB(0x1c, 0x10, 0x18));
+    tg_hex(102, RGB(0x40, 0x40, 0xd0), 0, 0), tg_hex(96, RGB(0xf0, 0xc8, 0x30), 1, 0), tg_hex(86, RGB(0xff, 0x30, 0x20), 0, 1);
+    for (i = 0; i < 8; i++) {                                          /* the box, turning its own way */
+        int32_t c = wv_sin4(a + 64u), s2 = wv_sin4(a), x = V[i][0] * c - V[i][2] * s2, z = V[i][0] * s2 + V[i][2] * c, y = V[i][1] * 127, y2 = (y * 110 - z * 60) / 127, z2 = (y * 60 + z * 110) / 127;
+        px[i] = 120 + x * 48 / (127 + z2 / 5), py[i] = 124 + y2 * 48 / (127 + z2 / 5);
+    }
+    for (i = 0; i < 12; i++) wvf_pline(px[E[i][0]], py[E[i][0]], px[E[i][1]], py[E[i][1]], RGB(0xe0, 0x40, 0xd0));
+    for (b = 0; b < 38; b++) {                                         /* the ring: bars of the spectrum, white when their keys sound */
+        uint32_t an = (uint32_t)b * 256u / 38u;
+        int32_t band = b % 19, k0 = band * 27 / 19, k1 = (band + 1) * 27 / 19, lit = (int32_t)((nk_mask >> k0) & ((1u << (k1 - k0 + 1)) - 1u)) != 0, l = 24 + (int32_t)sp_s[band] * 2 / 3, x0, y0, x1, y1;
+        tg_proj(24 * wv_sin4(an + 64u) / 127, 24 * wv_sin4(an) / 127, &x0, &y0), tg_proj(l * wv_sin4(an + 64u) / 127, l * wv_sin4(an) / 127, &x1, &y1);
+        ne_line(x0, y0, x1, y1, lit ? WC_WHT : RGB(0x40, 0x50, 0xf0));
+    }
+    for (i = 0; i < 3; i++) { uint32_t an = a + (uint32_t)i * 85u; int32_t ex, ey; tg_proj(30 * wv_sin4(an + 64u) / 127, 30 * wv_sin4(an) / 127, &ex, &ey); ne_line3(120, 124, ex, ey, RGB(0xff, 0x30, 0x20)); }
+    wf_textc(120, 8, 1, "I GLOBAL TARGET I", RGB(0xf0, 0xc8, 0x30));
+    str_cpy(t, "X ", 20), fmt_int(t + 2, song.g[G_BPM]), str_cpy(t + str_len(t), ".20272", 20 - str_len(t)), wf_text(70, 226, 1, t, RGB(0xf0, 0xc8, 0x30));
+}
+/* BLUEPRINT as a fight: each part of the robot is a range of keys; a note hits it (it flashes white, a number flies off in the key's colour),
+ * many hits turn it orange then red; two seconds without hits and it mends, back to green. The parts swell on the beat. With an effect on,
+ * the blue sight moves on the beat to a part and fires at it */
+static uint8_t bp_dmg[9], bp_fl[9], bp_quiet[9];
+static int16_t bp_num[6][4];                   /* x, y, life, key */
+static int32_t bp_sx = 56, bp_sy = 72, bp_tgt;
+static UI_NOINLINE void v3_blueprint(void)
+{
+    int32_t i, part = 0, k, cx[9] = {0}, cy[9] = {0}, cn[9] = {0}, pulse = wvf_hit_n > 2 ? 4 : 0;
+    char b[8];
+    for (k = 0; k < 27; k++) if ((nk_on >> k) & 1u) {                  /* a hit */
+        int32_t p = k * 9 / 27;
+        if (bp_dmg[p] < 9) bp_dmg[p]++;
+        bp_fl[p] = 4, bp_quiet[p] = 0;
+        for (i = 0; i < 6; i++) if (!bp_num[i][2]) { bp_num[i][2] = 16, bp_num[i][3] = (int16_t)k, bp_num[i][0] = (int16_t)p; break; }
+    }
+    for (i = 0; i < 9; i++) { if (bp_fl[i]) bp_fl[i]--; if (++bp_quiet[i] > 20 && bp_dmg[i] && !(wv_ph % 2u)) bp_dmg[i]--;   /* (a second untouched, then it mends fast) */ if (bp_quiet[i] > 200) bp_quiet[i] = 200; }
+    WFR(0, 0, 240, 240, RGB(0x04, 0x08, 0x10));
+    for (i = 0; i < 12; i++) WFR(i * 20, 0, 1, 240, RGB(0x18, 0x34, 0x48)), WFR(0, i * 20, 240, 1, RGB(0x18, 0x34, 0x48));
+    WFR(0, (int32_t)((wv_ph * 4u) % 240u), 240, 1, RGB(0x30, 0x90, 0xb0));
+    for (i = 0; i + 1 < (int32_t)(sizeof BP_HALF / sizeof BP_HALF[0]); i += 2) { if (BP_HALF[i] < 0) { part++; continue; } cx[part % 9] += BP_HALF[i] - 120, cy[part % 9] += BP_HALF[i + 1], cn[part % 9]++; }
+    for (i = 0; i < 9; i++) if (cn[i]) cx[i] /= cn[i], cy[i] /= cn[i];
+    part = 0;
+    for (i = 0; i + 3 < (int32_t)(sizeof BP_HALF / sizeof BP_HALF[0]); i += 2) {
+        int32_t p, d, sc;
+        uint16_t c;
+        if (BP_HALF[i] < 0) { part++; continue; }
+        if (BP_HALF[i + 2] < 0) continue;
+        p = part % 9, d = bp_dmg[p], sc = 100 + pulse + (int32_t)sp_s[BP_BAND[p]] / 3;
+        c = bp_fl[p] ? WC_WHT : d >= 6 ? RGB(0xff, 0x30, 0x30) : d >= 3 ? RGB(0xff, 0x90, 0x20) : RGB(0x40, 0xe0, 0x20);
+#define BX(v) (120 + cx[p] + ((v) - 120 - cx[p]) * sc / 100)
+#define BY2(v) (cy[p] + ((v) - cy[p]) * sc / 100)
+        ne_line(BX(BP_HALF[i]), BY2(BP_HALF[i + 1]), BX(BP_HALF[i + 2]), BY2(BP_HALF[i + 3]), c);
+        ne_line(240 - BX(BP_HALF[i]), BY2(BP_HALF[i + 1]), 240 - BX(BP_HALF[i + 2]), BY2(BP_HALF[i + 3]), c);
+#undef BX
+#undef BY2
+    }
+    if (punch.cur >= 0 || thr_req) {                                   /* an effect on: the sight hunts on the beat and fires */
+        if (wvf_hit_n == 5 || !(wv_ph % 10u)) bp_tgt = (int32_t)(pc_h(wv_ph) % 9u);
+        bp_sx += (120 + cx[bp_tgt] - bp_sx) / 3, bp_sy += (cy[bp_tgt] - bp_sy) / 3;
+        if ((wv_ph % 10u) < 3u) { wvf_pline(bp_sx, bp_sy, 120 + cx[bp_tgt], cy[bp_tgt], RGB(0x80, 0xe0, 0xff)); if ((wv_ph % 10u) == 2u && bp_dmg[bp_tgt] < 9) bp_dmg[bp_tgt]++, bp_fl[bp_tgt] = 3, bp_quiet[bp_tgt] = 0; }
+    } else bp_sx += (56 - bp_sx) / 6, bp_sy += (72 - bp_sy) / 6;
+    ne_ring(bp_sx, bp_sy, 20, RGB(0x30, 0xc0, 0xf0)), ne_ring(bp_sx, bp_sy, 10 + wv_bass() / 2, RGB(0x30, 0xc0, 0xf0));
+    wvf_pline(bp_sx - 28, bp_sy, bp_sx + 28, bp_sy, RGB(0x30, 0xc0, 0xf0)), wvf_pline(bp_sx, bp_sy - 28, bp_sx, bp_sy + 28, RGB(0x30, 0xc0, 0xf0));
+    for (i = 0; i < 6; i++) if (bp_num[i][2]) {                        /* the numbers flying off */
+        int32_t p = bp_num[i][0], kk = bp_num[i][3];
+        fmt_int(b, 3 + kk % 7 + (int32_t)bp_dmg[p] * 2);
+        wf_textc(120 + cx[p] + (kk & 1 ? 14 : -14), cy[p] - (16 - bp_num[i][2]) * 2, 1, b, sh_note_col(kk));
+        bp_num[i][2]--;
+    }
+    { int32_t hp = 0; for (i = 0; i < 9; i++) hp += 9 - bp_dmg[i]; WFR(8, 226, 82, 8, RGB(0x10, 0x20, 0x10)), WFR(9, 227, hp, 6, hp > 50 ? RGB(0x40, 0xe0, 0x20) : hp > 25 ? RGB(0xff, 0x90, 0x20) : RGB(0xff, 0x30, 0x30)); wf_text(94, 226, 0, "HP", WC_LAB); }
+    for (i = 0; i < 9; i++) if (bp_dmg[i] >= 6) { if ((wv_ph / 4u) & 1u) WFR(176, 6, 58, 14, RGB(0xff, 0x30, 0x30)), wf_textc(205, 9, 1, "ALERT", WC_WHT); break; }
+}
+/* HOUND, bigger: the neon dog. In a pause it lowers its head to the bowl and eats (the kibble goes down, it chews); with music it lifts it and
+ * nods on the beat, its tail wags, the sound goes in at its mouth and out at its tail as notes. Inside it, each thing its own: gears that turn
+ * with the tempo and spin up with the bass, rings that open with the bands, the four tracks as meters, the spectrum, a square wave */
+static int32_t hd2_head, hd2_food = 8;
+static UI_NOINLINE void hd_gear(int32_t cx, int32_t cy, int32_t r, uint32_t a, uint16_t c)
+{
+    uint32_t q;
+    ne_ring(cx, cy, r, c), ne_ring(cx, cy, r / 3, c);
+    for (q = 0; q < 8u; q++) { uint32_t an = a + q * 32u; ne_line(cx + r * wv_sin4(an + 64u) / 127, cy + r * wv_sin4(an) / 127, cx + (r + 4) * wv_sin4(an + 64u) / 127, cy + (r + 4) * wv_sin4(an) / 127, c); }
+}
+static UI_NOINLINE void v3_hound(void)
+{
+    int32_t i, quiet = !nk_mask && ev_lvl < 12, nod = quiet ? 0 : (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u) * 5;
+    int32_t hx, hy, tail = WV_SIN[(wv_ph * (quiet ? 2u : 9u)) & 63u] * (quiet ? 5 : 14) / 127, chew = (int32_t)((wv_ph / 3u) & 1u);
+    static uint32_t gear;
+    gear += 2u + (uint32_t)clamp(song.g[G_BPM], 40, 240) / 30u + (uint32_t)wv_bass();
+    hd2_head += quiet ? (hd2_head < 40 ? 3 : 0) : (hd2_head > 0 ? -5 : 0);
+    if (hd2_head < 0) hd2_head = 0;
+    if (quiet && hd2_head >= 40 && !(wv_ph % 14u) && hd2_food > 0) hd2_food--;   /* eating */
+    if (!quiet && hd2_food < 8 && !(wv_ph % 30u)) hd2_food++;          /* (the bowl fills up again while it plays) */
+    hx = 64 - hd2_head / 3, hy = 62 + hd2_head * 2 + nod;
+    ne_line(72, 80, 196, 80, NE_BRN), ne_line(196, 80, 210, 94, NE_BRN), ne_line(210, 94, 210, 150, NE_BRN), ne_line(210, 150, 196, 164, NE_BRN);   /* the body */
+    ne_line(196, 164, 72, 164, NE_BRN), ne_line(72, 164, 60, 150, NE_BRN), ne_line(60, 150, 60, 94, NE_BRN), ne_line(60, 94, 72, 80, NE_BRN);
+    for (i = 0; i < 4; i++) { static const int16_t LX[4] = {76, 102, 168, 194}; int32_t st = !quiet && ((wv_ph / 4u + (uint32_t)i) & 1u) ? 3 : 0; ne_line(LX[i], 164, LX[i] + st, 206, NE_BRN), ne_line(LX[i] + st, 206, LX[i] + st - 8, 206, NE_BRN); }
+    ne_line(206, 86, 224 + tail, 58 - (tail < 0 ? -tail : tail) / 2, NE_BRN);
+    ne_line(70, 86, hx + 6, hy + 24, NE_BRN), ne_line(66, 104, hx + 8, hy + 32, NE_BRN);   /* the neck */
+    ne_line(hx, hy, hx - 30, hy + 5, NE_BRN), ne_line(hx - 30, hy + 5, hx - 40, hy + 18, NE_BRN), ne_line(hx - 40, hy + 18, hx - 30, hy + 26 + (quiet ? chew * 4 : 0), NE_BRN);
+    ne_line(hx - 30, hy + 26 + (quiet ? chew * 4 : 0), hx + 3, hy + 30, NE_BRN), ne_line(hx + 3, hy + 30, hx + 10, hy + 12, NE_BRN), ne_line(hx + 10, hy + 12, hx, hy, NE_BRN);
+    ne_line(hx - 2, hy + 2, hx + 5, hy + 28 + nod / 2, NE_PNK), ne_line(hx + 5, hy + 28 + nod / 2, hx + 13, hy + 22, NE_PNK);
+    WFR(hx - 18, hy + 10, 4, 4, quiet ? NE_DIM : NE_BLU), WFR(hx - 42, hy + 15, 4, 4, NE_RED);
+    ne_line(10, 212, 58, 212, NE_GRN), ne_line(10, 212, 16, 222, NE_GRN), ne_line(58, 212, 52, 222, NE_GRN), ne_line(16, 222, 52, 222, NE_GRN);   /* the bowl */
+    for (i = 0; i < hd2_food; i++) WFR(16 + i * 5, 207 - (i & 1) * 3, 4, 4, NE_ORG);
+    if (quiet && hd2_head >= 40 && chew) for (i = 0; i < 3; i++) WFR(hx - 36 + i * 6, hy + 34 - i * 3, 2, 2, NE_ORG);   /* crumbs */
+    ne_line(0, 224, 240, 224, NE_GRN);
+    if (!quiet) for (i = 0; i < 8; i++) { int32_t x = 2 + ((int32_t)(wv_ph * 3u) + i * 9) % 60; if (x < hx - 42) WFR(x, hy + 18 + WV_SIN[((uint32_t)x * 4u) & 63u] / 40, 3, 2, NE_BLU); }
+    if (!quiet) for (i = 0; i < 5; i++) { int32_t d = (int32_t)((wv_ph * 2u + (uint32_t)i * 13u) % 50u), x = 222 + d / 2, y = 54 - d + WV_SIN[((uint32_t)d * 6u + (uint32_t)i * 11u) & 63u] / 30; WFR(x, y, 3, 3, i & 1 ? NE_PNK : NE_GRN), WFR(x + 2, y - 6, 1, 6, i & 1 ? NE_PNK : NE_GRN); }
+    {                                                                  /* inside, side by side: no one over another. Only the part that answers lights white:
+                                                                        * low notes the big gear, middle ones the scope, high ones the dial and the small gear,
+                                                                        * the loop's beat the track bars, an effect the right-hand gears */
+        static int32_t fl[5], say;
+        static uint32_t lb;
+        int32_t k;
+        uint32_t bt = wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u;
+        uint16_t c1, c2, c3, c4, c5;
+        for (k = 0; k < 5; k++) if (fl[k]) fl[k]--;
+        if (nk_on & 0x1FFu) fl[0] = 4;
+        if (nk_on & 0x3FE00u) fl[1] = 4;
+        if (nk_on & 0x7FC0000u) fl[2] = 4;
+        if (song.playing && bt != lb) fl[3] = 3;
+        lb = bt;
+        if (punch.cur >= 0 || thr_req) fl[4] = (wv_ph & 2u) ? 2 : fl[4];
+        c1 = fl[0] ? WC_WHT : NE_ORG, c2 = fl[2] ? WC_WHT : NE_PNK, c3 = fl[1] ? WC_WHT : NE_BLU, c4 = fl[3] ? WC_WHT : NE_PUR, c5 = fl[4] ? WC_WHT : NE_GRN;
+        hd_gear(84, 102, 11, gear, c1), hd_gear(102, 118, 7, (uint32_t)(-(int32_t)gear * 3 / 2), c2);
+        for (k = 0; k < 3; k++) ne_ring(82, 144, 3 + (int32_t)sp_s[k * 6] / 2 + k * 2, k == 0 ? c3 : k == 1 ? c4 : c5);
+        for (k = 0; k < 4; k++) { int32_t h = clamp((int32_t)trk_level((uint32_t)k) * 24 / 127 * (trk[k].p[P_MUTE] ? 0 : 1) * ((int32_t)sp_s[k * 4] + 4) / 20, 1, 24); ne_box(116 + k * 8, 156 - h, 5, h, 0, k == 3 ? NE_RED : c4); }
+        for (k = 0; k < 8; k++) { int32_t h = clamp((int32_t)sp_s[k * 2 + 1], 1, 24); WFR(156 + k * 4, 156 - h, 2, h, k & 1 ? NE_RED : NE_GRN); }
+        { int32_t px = 118, py = 100, x; for (x = 0; x < 34; x++) { int32_t y = 100 + scope_buf[(scope_w - 68u + 2u * (uint32_t)x) & (SCOPE_N - 1u)] * 8 / 12000; if (x) wvf_pline(px, py, 118 + x, y, c3); px = 118 + x, py = y; } }   /* a scope */
+        for (k = 0; k < 3; k++) { int32_t xs = 160 + k * 9, hh = 3 + wv_bass(); ne_line(xs, 112, xs, 112 - hh, NE_ORG), ne_line(xs, 112 - hh, xs + 4, 112 - hh, NE_ORG), ne_line(xs + 4, 112 - hh, xs + 4, 112, NE_ORG); }
+        hd_gear(192, 104, 6, gear * 2u, c5), hd_gear(194, 140, 5, (uint32_t)(-(int32_t)gear * 2), c5);
+        for (k = 0; k < 5; k++) WFR(146 + k * 6, 92, 4, 4, (nk_mask >> (k * 5)) & 1u ? WC_WHT : (k & 1 ? NE_PNK : NE_BLU));   /* little lamps: the keys */
+        { uint32_t an = gear / 2u; ne_line(138, 132, 138 + 6 * wv_sin4(an + 64u) / 127, 132 + 6 * wv_sin4(an) / 127, c2), ne_ring(138, 132, 7, c2); }   /* a dial */
+        if (nk_on & 0x7E00000u) say = 30;                              /* the high notes: someone says it */
+        if (say) { say--; ne_box(16, 40, 112, 16, 0, NE_PNK); wf_text(20, 44, 1, "WHO'S A GOOD BOY?", WC_WHT); }
+    }
+    wf_text(10, 6, 1, "FREQ", NE_BLU), ne_gauge(24, 34, ne_frac(song.g[G_FILT], GP[G_FILT].min, GP[G_FILT].max), NE_BLU);
+    wf_text(200, 6, 1, "BPM", NE_PUR), ne_num(190, 18, 20, song.g[G_BPM], NE_GRN);
+}
+/* BOXER in outlines only (as the line pictures): the ring, the crowd, the bag and the boxer drawn as their contours, in their colours */
+static UI_NOINLINE void spr_outline(const char *const *rows, int32_t nr, int32_t x, int32_t y, int32_t z, const char *keys, const uint16_t *cols)   /* the contour of each colour, 2 px */
+{
+    int32_t r, c;
+    for (r = 0; r < nr; r++)
+        for (c = 0; rows[r][c]; c++) {
+            char ch = rows[r][c];
+            const char *k = keys;
+            int32_t i = 0, X = x + c * z, Y = y + r * z;
+            while (*k && *k != ch) k++, i++;
+            if (!*k) continue;
+            if (r == 0 || rows[r - 1][c] != ch) WFR(X, Y, z, 2, cols[i]);
+            if (r == nr - 1 || rows[r + 1][c] != ch) WFR(X, Y + z - 2, z, 2, cols[i]);
+            if (c == 0 || rows[r][c - 1] != ch) WFR(X, Y, 2, z, cols[i]);
+            if (!rows[r][c + 1] || rows[r][c + 1] != ch) WFR(X + z - 2, Y, 2, z, cols[i]);
+        }
+}
+static UI_NOINLINE void v3_boxer(void)
+{
+    static const uint16_t BC[8] = {RGB(0x80, 0x50, 0x30), RGB(0xe8, 0xa8, 0x7c), RGB(0xc0, 0x84, 0x60), RGB(0xf0, 0xf0, 0xf0), RGB(0xff, 0x40, 0x40), RGB(0x50, 0x80, 0xff), RGB(0xf8, 0xf8, 0xf8), RGB(0x90, 0x90, 0xa8)};
+    int32_t i, bob = (int32_t)((wv_ph * (uint32_t)clamp(song.g[G_BPM], 40, 240) / 600u) & 1u) * 3, sw;
+    char b[8];
+    WFR(0, 0, 240, 240, RGB(0x0c, 0x0a, 0x12));
+    for (i = 0; i < 60; i++) { int32_t x = (int32_t)(pc_h((uint32_t)i * 7u) % 240u), y = 10 + (int32_t)(pc_h((uint32_t)i * 13u) % 70u); ne_ring(x, y, 4, sp_s[i % 19] > 12 && (pc_h((uint32_t)i + wv_ph / 2u) & 7u) == 0u ? WC_WHT : RGB(0x40, 0x3c, 0x50)); }
+    ne_line(0, 150, 240, 150, RGB(0xa0, 0xa0, 0xb0));
+    for (i = 0; i < 3; i++) wvf_pline(0, 96 + i * 18, 240, 96 + i * 18, i == 0 ? RGB(0xff, 0x40, 0x40) : i == 1 ? RGB(0xf0, 0xf0, 0xf0) : RGB(0x50, 0x80, 0xff));
+    ne_box(10, 90, 8, 64, 0, RGB(0xff, 0x40, 0x40)), ne_box(222, 90, 8, 64, 0, RGB(0x50, 0x80, 0xff));
+    for (i = 0; i < 6; i++) wvf_pline(0, 170 + i * 12, 240, 170 + i * 12, RGB(0x30, 0x30, 0x40));
+    if (nk_low(nk_on)) bx_t = 1; else if (nk_high(nk_on)) bx_t = 101; else if (wvf_hit_n == 5 && !bx_t) bx_t = 1;
+    if (bx_t == 4 || bx_t == 104) bx_bag = 14;
+    sw = bx_bag * WV_SIN[(wv_ph * 6u) & 63u] / 127;
+    if (bx_bag) bx_bag--;
+    wvf_pline(182, 0, 182 + sw / 3, 70, RGB(0x80, 0x80, 0x80));
+    ne_box(168 + sw, 70, 28, 64, 0, RGB(0xd0, 0x40, 0x30)), ne_line(168 + sw, 84, 196 + sw, 84, RGB(0xd0, 0x40, 0x30));
+    {
+        int32_t hit = (bx_t > 0 && bx_t < 8) || (bx_t > 100 && bx_t < 108);
+        spr_outline(hit ? BX_J : BX_G, 30, 54 + (hit ? 10 : 0), 84 + bob, 4, "HSsKGBwN", BC);
+        if (bx_t) { bx_t++; if (bx_t == 9 || bx_t == 109) bx_t = 0; }
+        if (hit && (bx_t == 3 || bx_t == 103)) for (i = 0; i < 6; i++) { uint32_t an = (uint32_t)i * 43u; ne_line(166 + sw, 98, 166 + sw + 10 * wv_sin4(an + 64u) / 127, 98 + 10 * wv_sin4(an) / 127, RGB(0xff, 0xe0, 0x60)); }
+    }
+    wf_text(10, 218, 1, "ROUND", RGB(0xf0, 0xc0, 0x30)), fmt_int(b, (int32_t)(wf_secs() / 30u % 12u) + 1), wf_text(52, 218, 1, b, WC_WHT);
+    {                                                                  /* POWER: how many keys at once (three fill it), green to red */
+        static int32_t pw;
+        int32_t n = 0; uint32_t m;
+        for (m = nk_mask; m; m >>= 1) n += (int32_t)(m & 1u);
+        pw += (clamp(n * 34, 0, 100) - pw) / (n * 34 > pw ? 2 : 6);
+        wf_text(150, 218, 1, "POWER", RGB(0xf0, 0xc0, 0x30));
+        for (i = 0; i < 10; i++) if (i * 10 < pw) WFR(192 + i * 4, 226 - i, 3, 4 + i, i < 4 ? RGB(0x60, 0xf0, 0x60) : i < 7 ? RGB(0xff, 0xd0, 0x40) : RGB(0xff, 0x40, 0x30)); else ne_line(192 + i * 4, 230, 194 + i * 4, 230, RGB(0x50, 0x40, 0x40));
+    }
+}
+/* PATCH: a modular in lines (after the patched one): modules, jacks, cables. Each effect has its module and its cable: the DJ filter,
+ * the delay (its send and feedback), the reverb, the drive, and the performance effect. The cable's sag and swing are the effect's amount, it
+ * glows while it is on; the performance effect's cable pulses at its pace; the LEDs blink with it */
+static UI_NOINLINE void pt_cable(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t sag, int32_t sway, uint16_t c)
+{
+    int32_t i, px = x0, py = y0;
+    for (i = 1; i <= 16; i++) {
+        int32_t t = i * 64 / 16, x = x0 + (x1 - x0) * i / 16 + sway * WV_SIN[(uint32_t)t & 63u] / 127, y = y0 + (y1 - y0) * i / 16 + sag * WV_SIN[(uint32_t)(i * 2) & 63u] / 127;
+        ne_line(px, py, x, y, c); px = x, py = y;
+    }
+    ne_ring(x0, y0, 3, c), ne_ring(x1, y1, 3, c);
+}
+static UI_NOINLINE void v3_patch(void)
+{
+    static const char *const MN[6] = {"FILTER", "DELAY", "FDBK", "REVERB", "DRIVE", "FX"};
+    static const uint16_t MC[6] = {RGB(0x60, 0xd0, 0xff), RGB(0xff, 0xc8, 0x40), RGB(0xff, 0x90, 0x30), RGB(0xb0, 0x80, 0xff), RGB(0xff, 0x50, 0x50), RGB(0x60, 0xff, 0x90)};
+    int32_t v[6], i, k;
+    uint32_t t = wv_ph;
+    v[0] = ne_frac(song.g[G_FILT], GP[G_FILT].min, GP[G_FILT].max), v[1] = clamp(TSEL->p[P_DLY] * 8, 0, 1024), v[2] = ne_frac(song.g[G_DFDBK], GP[G_DFDBK].min, GP[G_DFDBK].max);
+    v[3] = clamp(TSEL->p[P_REV] * 8, 0, 1024), v[4] = clamp(TSEL->p[P_DIST] * 8, 0, 1024), v[5] = punch.cur >= 0 || thr_req ? 1024 : 0;
+    WFR(0, 0, 240, 240, RGB(0x10, 0x0c, 0x14));
+    ne_box(8, 10, 224, 74, 0, RGB(0xff, 0x60, 0x40)), ne_box(8, 92, 224, 82, 0, RGB(0x40, 0xc0, 0xc0));   /* the two rows of modules */
+    for (i = 0; i < 6; i++) {
+        int32_t mx = 14 + i * 37, my = 16, on = v[i] > 40, k2;
+        uint32_t a = 96u + (uint32_t)v[i] * 192u / 1024u;
+        ne_box(mx, my, 32, 62, 0, on ? MC[i] : RGB(0x50, 0x40, 0x48));
+        wf_textc(mx + 16, my + 3, 0, MN[i], on ? MC[i] : RGB(0x70, 0x60, 0x68));
+        ne_ring(mx + 16, my + 26, 9, MC[i]), ne_line(mx + 16, my + 26, mx + 16 + 8 * wv_sin4(a + 64u) / 127, my + 26 + 8 * wv_sin4(a) / 127, WC_WHT);   /* its knob */
+        for (k2 = 0; k2 < 3; k2++) WFR(mx + 7 + k2 * 8, my + 42, 4, 3, on && ((t / (uint32_t)(2 + i) + (uint32_t)k2) % 3u == 0u) ? MC[i] : RGB(0x30, 0x24, 0x2c));   /* its LEDs */
+        ne_ring(mx + 16, my + 54, 4, RGB(0xc0, 0xb0, 0x90));          /* its jack */
+    }
+    for (i = 0; i < 12; i++) ne_ring(18 + i * 18, 108, 4, RGB(0xc0, 0xb0, 0x90)), ne_ring(18 + i * 18, 128, 6, sp_s[(uint32_t)i * 19u / 12u] > 10 ? RGB(0xff, 0x80, 0x90) : RGB(0x80, 0x40, 0x50));
+    for (i = 0; i < 12; i++) WFR(14 + i * 18, 146, 9, 2 + (int32_t)sp_s[(uint32_t)i * 19u / 12u] / 2, RGB(0x40, 0xc0, 0xc0));
+    for (i = 0; i < 6; i++) {                                          /* the cables: down to the voices' jacks, hanging and swinging with the amount */
+        int32_t x0 = 30 + i * 37, x1 = 18 + ((i * 5 + 2) % 12) * 18, sag = 6 + v[i] / 40, sway = v[i] > 40 ? WV_SIN[(t * (uint32_t)(2 + i)) & 63u] * v[i] / 1024 / 6 : 0;
+        uint16_t c = v[i] > 40 ? MC[i] : RGB(0x60, 0x50, 0x30);
+        if (i == 5 && v[5] && ((t / 2u) & 1u)) c = WC_WHT;
+        pt_cable(x0, 70, x1, 108, sag + (i == 5 && v[5] ? (int32_t)((t * 3u) % 12u) : 0), sway, c);
+    }
+    for (k = 0; k < 8; k++) ne_box(14 + k * 28, 186, 24, 24, 0, (nk_mask >> (k * 3)) & 7u ? RGB(0xff, 0xe0, 0x60) : (k & 1 ? RGB(0xff, 0x60, 0x40) : RGB(0x40, 0xc0, 0xc0)));   /* the pads: the keys */
+    ne_ring(30, 222, 8, RGB(0x60, 0x60, 0x70)), ne_ring(210, 222, 8, RGB(0x60, 0x60, 0x70)), ne_ring(30, 222, 3 + wv_bass() / 3, WC_WHT), ne_ring(210, 222, 3 + wv_bass() / 3, WC_WHT);   /* speakers */
+    if (punch.cur >= 0) wf_textc(120, 224, 1, PUNCH_NAME[punch.cur], RGB(0x60, 0xff, 0x90));
+}
+/* TARGET as a tesseract: the 4D cube turning in two planes at once (its inner cube passing through the outer), projected in lines; it swells
+ * with the bass, turns faster with the tempo, its edges flash white with their notes; the ring of the spectrum round it, the title */
+static int32_t ts_a, ts_b;
+static UI_NOINLINE void v4_tesseract(void)
+{
+    int32_t px[16], py[16], i, j, b;
+    char t[20];
+    ts_a += 1 + clamp(song.g[G_BPM], 40, 240) / 60, ts_b += 1 + ev_rate / 64;
+    WFR(0, 0, 240, 240, RGB(0x1c, 0x10, 0x18));
+    for (i = 0; i < 16; i++) {
+        int32_t x = (i & 1) ? 100 : -100, y = (i & 2) ? 100 : -100, z = (i & 4) ? 100 : -100, w = (i & 8) ? 100 : -100;
+        int32_t ca = wv_sin4((uint32_t)ts_a + 64u), sa = wv_sin4((uint32_t)ts_a), cb = wv_sin4((uint32_t)ts_b + 64u), sb = wv_sin4((uint32_t)ts_b);
+        int32_t x2 = (x * ca - w * sa) / 127, w2 = (x * sa + w * ca) / 127, y2 = (y * cb - z * sb) / 127, z2 = (y * sb + z * cb) / 127;   /* the XW and YZ turns */
+        int32_t k4 = 300 * 127 / (300 - w2), x3 = x2 * k4 / 127, y3 = y2 * k4 / 127, z3 = z2 * k4 / 127, s = 60 + wv_bass();   /* 4D to 3D */
+        int32_t x4 = (x3 * 120 - z3 * 40) / 127, z4 = (x3 * 40 + z3 * 120) / 127;   /* a slight turn to see it in depth */
+        px[i] = 120 + x4 * s / (200 + z4 / 2), py[i] = 124 + y3 * s / (200 + z4 / 2);
+    }
+    for (i = 0; i < 16; i++) for (b = 0; b < 4; b++) {               /* an edge: two corners one bit apart */
+        j = i ^ (1 << b);
+        if (j < i) continue;
+        { int32_t e = i * 4 + b, lit = (nk_mask >> (e % 27)) & 1u; ne_line(px[i], py[i], px[j], py[j], lit ? WC_WHT : b == 3 ? RGB(0xff, 0x30, 0x20) : (i & 8) ? RGB(0x40, 0x60, 0xf0) : RGB(0xe0, 0x40, 0xd0)); }
+    }
+    for (b = 0; b < 38; b++) {                                         /* the ring: bars of the spectrum, white when their keys sound */
+        uint32_t an = (uint32_t)b * 256u / 38u + (uint32_t)ts_a / 2u;
+        int32_t band = b % 19, k0 = band * 27 / 19, k1 = (band + 1) * 27 / 19, lit = (int32_t)((nk_mask >> k0) & ((1u << (k1 - k0 + 1)) - 1u)) != 0, l = 92 + (int32_t)sp_s[band] * 2 / 3;
+        ne_line(120 + 92 * wv_sin4(an + 64u) / 127, 124 + 92 * wv_sin4(an) / 127, 120 + l * wv_sin4(an + 64u) / 127, 124 + l * wv_sin4(an) / 127, lit ? WC_WHT : RGB(0xf0, 0xc8, 0x30));
+    }
+    wf_textc(120, 8, 1, "I GLOBAL TARGET I", RGB(0xf0, 0xc8, 0x30));
+    str_cpy(t, "X ", 20), fmt_int(t + 2, song.g[G_BPM]), str_cpy(t + str_len(t), ".20272", 20 - str_len(t)), wf_text(70, 226, 1, t, RGB(0xf0, 0xc8, 0x30));
+}
+/* PATCH, busier: two rows of modules whose knobs turn with their effects, many cables between them that sag with the amounts and shiver
+ * when notes are played; below, two keyboards whose keys go down as the notes sound */
+static UI_NOINLINE void v4_patch(void)
+{
+    static const uint16_t MC[5] = {RGB(0x60, 0xd0, 0xff), RGB(0xff, 0xc8, 0x40), RGB(0xb0, 0x80, 0xff), RGB(0xff, 0x50, 0x50), RGB(0x60, 0xff, 0x90)};
+    static const uint8_t BL[12] = {0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0};
+    uint32_t g = (uint32_t)wf_grp % 3u;
+    int32_t v[5], i, k, shake = nk_on ? 5 : ev_rate > 30 ? 2 : 0;
+    uint32_t t = wv_ph;
+    WFR(0, 0, 240, 240, RGB(0x10, 0x0c, 0x14));
+    for (i = 0; i < 5; i++) {                                          /* the top row: KNOB 1..4 (the group they move now, named as they are), the FX */
+        int32_t mx = 4 + i * 47, my = 6, on, hot = 0, k2;
+        uint32_t a;
+        const char *nm = "FX";
+        if (i < 4) {
+            int16_t *vp;
+            const param_desc_t *d = wf_sl(g * 4u + (uint32_t)i, &vp);
+            v[i] = d ? wf_frac(d, *vp) : 0, nm = WF_SL[g * 4u + (uint32_t)i].shrt, hot = wf_hot == (int32_t)(g * 4u + (uint32_t)i) && wf_saying();
+        } else v[i] = punch.cur >= 0 || thr_req ? 1024 : 0, nm = punch.cur >= 0 ? PUNCH_NAME[punch.cur] : "FX";
+        on = v[i] > 40 || hot;
+        a = 96u + (uint32_t)v[i] * 192u / 1024u;                      /* (the knob points where yours is: 7 o'clock .. 5 o'clock) */
+        ne_box(mx, my, 43, 66, 0, hot ? WC_WHT : on ? MC[i] : RGB(0x50, 0x40, 0x48));
+        wf_clx0 = mx + 1, wf_clx1 = mx + 42;
+        wf_textc(mx + 21, my + 3, 0, nm, hot ? WC_WHT : on ? MC[i] : RGB(0x70, 0x60, 0x68));
+        wf_clx0 = 0, wf_clx1 = 240;
+        ne_ring(mx + 21, my + 25, 11, hot ? WC_WHT : MC[i]), ne_line3(mx + 21, my + 25, mx + 21 + 10 * wv_sin4(a + 64u) / 127, my + 25 + 10 * wv_sin4(a) / 127, WC_WHT);
+        for (k2 = 0; k2 < 3; k2++) WFR(mx + 10 + k2 * 9, my + 42, 4, 3, on && ((t / (uint32_t)(2 + i) + (uint32_t)k2) % 3u == 0u) ? MC[i] : RGB(0x30, 0x24, 0x2c));
+        ne_ring(mx + 12, my + 56, 3, RGB(0xc0, 0xb0, 0x90)), ne_ring(mx + 30, my + 56, 3, RGB(0xc0, 0xb0, 0x90));
+    }
+    for (i = 0; i < 8; i++) {                                          /* the middle row: the voices, a knob each turned by its band */
+        int32_t mx = 6 + i * 29, my = 84, f = (int32_t)sp_s[(uint32_t)i * 19u / 8u] * 40;
+        uint32_t a = 96u + (uint32_t)clamp(f, 0, 1024) * 192u / 1024u;
+        ne_box(mx, my, 26, 52, 0, RGB(0x40, 0xc0, 0xc0));
+        ne_ring(mx + 13, my + 14, 7, RGB(0xff, 0x80, 0x90)), ne_line(mx + 13, my + 14, mx + 13 + 6 * wv_sin4(a + 64u) / 127, my + 14 + 6 * wv_sin4(a) / 127, WC_WHT);
+        WFR(mx + 5, my + 30, 16, 3, sp_s[(uint32_t)i * 2u] > 9 ? RGB(0xff, 0xe0, 0x60) : RGB(0x30, 0x40, 0x40));
+        ne_ring(mx + 7, my + 43, 3, RGB(0xc0, 0xb0, 0x90)), ne_ring(mx + 19, my + 43, 3, RGB(0xc0, 0xb0, 0x90));
+    }
+    for (i = 0; i < 12; i++) {                                         /* the cables: from the effects down to the voices and across, shivering with the notes */
+        int32_t s0 = i % 5, x0 = 16 + s0 * 47 + (i >= 5 ? 18 : 0), x1 = 13 + ((i * 5 + 3) % 8) * 29 + (i & 1) * 12, amt = v[s0], sag = 8 + amt / 40 + (i % 3) * 4;
+        int32_t sway = (amt > 40 ? WV_SIN[(t * (uint32_t)(2 + s0)) & 63u] * amt / 1024 / 6 : 0) + (shake ? (int32_t)(pc_h(t + (uint32_t)i) % (uint32_t)(shake * 2 + 1)) - shake : 0);
+        uint16_t c = amt > 40 ? MC[s0] : i & 1 ? RGB(0xc8, 0xa0, 0x30) : RGB(0x50, 0x70, 0x70);
+        if (s0 == 4 && v[4] && ((t / 2u) & 1u)) c = WC_WHT;
+        pt_cable(x0, 62, x1, 127, sag, sway, c);
+    }
+    for (k = 0; k < 2; k++) {                                          /* two keyboards: the left and the right halves of the keys */
+        int32_t kx = 6 + k * 118, ky = 150, wx = 0, n;
+        ne_box(kx, ky, 110, 52, 0, RGB(0xff, 0x60, 0x40));
+        for (n = k * 13; n < (k ? 27 : 13); n++) {
+            int on = (nk_mask >> n) & 1u;
+            if (BL[n % 12]) continue;
+            ne_box(kx + 4 + wx * 13, ky + 6 + (on ? 3 : 0), 11, 40, 0, on ? RGB(0xff, 0xe0, 0x60) : RGB(0xe0, 0xe0, 0xe8)), wx++;
+        }
+        for (n = k * 13, wx = 0; n < (k ? 27 : 13); n++) { int on = (nk_mask >> n) & 1u; if (!BL[n % 12]) { wx++; continue; } WFR(kx + 4 + wx * 13 - 4, ky + 6 + (on ? 3 : 0), 7, 22, on ? RGB(0xff, 0x60, 0xc0) : RGB(0x60, 0x50, 0x70)); }
+    }
+    ne_ring(24, 222, 9, RGB(0x60, 0x60, 0x70)), ne_ring(216, 222, 9, RGB(0x60, 0x60, 0x70)), ne_ring(24, 222, 3 + wv_bass() / 3, WC_WHT), ne_ring(216, 222, 3 + wv_bass() / 3, WC_WHT);
+    if (punch.cur >= 0) wf_textc(120, 220, 1, PUNCH_NAME[punch.cur], RGB(0x60, 0xff, 0x90));
+}
+/* DOOMSCROLL's lettering: the word drawn in dots, each dot lit by the level of its note, in the visualizer's colours */
+static UI_NOINLINE void dm_word(int32_t x, int32_t y)
+{
+    const char *s = "DOOMSCROLL";
+    int32_t ci = 0;
+    for (; *s; s++, ci++) {
+        uint32_t c = (uint8_t)*s, w = WFM_W[c - 32], r, b;
+        for (r = 0; r < WFM_H; r++)
+            for (b = 0; b < w; b++)
+                if ((WFM_ROWS[c - 32][r] >> (7 - b)) & 1u) {
+                    int32_t band = (ci * 2 + (int32_t)b / 3) % 19, lv = (int32_t)sp_s[band], on = lv > (int32_t)(WFM_H - r) * 2 || ((nk_mask >> (ci * 2 + 1)) & 1u);
+                    uint16_t col = !on ? RGB(0x50, 0x50, 0x80) : r < 2 ? RGB(0xff, 0xf0, 0x90) : r < 4 ? RGB(0xff, 0x70, 0xd0) : RGB(0x60, 0xe8, 0xff);
+                    WFR(x + (int32_t)b * 3, y + (int32_t)r * 3, 2, 2, col);
+                }
+        x += ((int32_t)w + 1) * 3;
+    }
+}
+/* LOFI STUDY: she writes while the music plays (frames 0..7 in a loop, at the tempo); a second after it stops (and with the loop alone, every 4 s) she looks up at the cat (8..11), stays two
+ * seconds, and goes back to her page (frame 0, still, till the music comes back). The frames are changes over the one before: a jump that is
+ * not the next frame decodes from frame 0 */
+static int32_t lf_cur = -1, lf_hold;
+static UI_NOINLINE void lf_goto(const vp_clip_t *c, int32_t f)
+{
+    int32_t i;
+    if (f == lf_cur) return;
+    if (f == lf_cur + 1) vp_decode(c, (uint32_t)f);
+    else for (i = 0; i <= f; i++) vp_decode(c, (uint32_t)i);
+    lf_cur = f;
+}
+static UI_NOINLINE void lf_step(void)
+{
+    static int32_t quiet, lp, look, once;
+    const vp_clip_t *c = &VP_CLIPS[0];
+    int32_t play = nk_mask || song.playing;                            /* (a key held, or the loop running) */
+    uint32_t per = 1000u * 120u / (6u * (uint32_t)(song.playing ? clamp(song.g[G_BPM], 40, 240) : 120));
+    if (vp_on != 0u) vp_on = 0, lf_cur = -1, lf_goto(c, 0), vp_t = fm1_ms, look = 0;
+    quiet = play ? 0 : quiet + 1;
+    if (play) once = 0;
+    lp = song.playing && !nk_hand && !look ? lp + 1 : 0;
+    if (!look && ((lp >= 80) || (quiet >= 20 && !once))) look = 1, lf_hold = 0, once = !play, lp = 0;   /* the loop alone: every 4 s; the quiet: once, after 1 s */
+    if (look && nk_hand) look = 0;                                     /* (you play: back to the page) */
+    if (look) {                                                        /* she looks up at the cat (8..10), stays, turns back (11) */
+        if (lf_cur < 8) { lf_goto(c, 8); vp_t = fm1_ms; return; }
+        if (lf_cur < 10) { if (fm1_ms - vp_t >= 160u) { vp_t = fm1_ms; lf_goto(c, lf_cur + 1); } return; }
+        if (++lf_hold == (play ? 20 : 40)) lf_goto(c, 11);
+        else if (lf_hold > (play ? 24 : 44)) look = 0, lf_goto(c, 0), vp_t = fm1_ms;
+        return;
+    }
+    if (!play) return;                                                 /* (the quiet, after looking: still at her page) */
+    if (lf_cur >= 8) lf_goto(c, 0);
+    if (fm1_ms - vp_t >= per) { vp_t = fm1_ms; lf_goto(c, (lf_cur + 1) % 8); }   /* writing, at the tempo */
+}
+/* RACCOON: in its round frame. Quiet: the still of it looking at you (frame 0), turning slowly. Playing: the clip of it dancing with its arms
+ * (frames 1..8, the clip turns by itself), faster with the tempo; it swells on the beat */
+static int32_t rc2_cur = -1, rc2_ang;
+static UI_NOINLINE void rc2_goto(const vp_clip_t *c, int32_t f)
+{
+    int32_t i;
+    if (f == rc2_cur) return;
+    if (f == rc2_cur + 1) vp_decode(c, (uint32_t)f); else for (i = 0; i <= f; i++) vp_decode(c, (uint32_t)i);
+    rc2_cur = f;
+}
+static UI_NOINLINE void rc2_paint(int32_t y0, int32_t hh)   /* the round frame turned: each screen pixel looks up its place, 3 x 3 */
+{
+    const vp_clip_t *c = &VP_CLIPS[1];
+    int32_t y, x, R = 119, C = wv_sin4((uint32_t)rc2_ang + 64u), S = wv_sin4((uint32_t)rc2_ang), half = c->w / 2;
+    for (y = y0; y < y0 + hh; y++) {
+        int32_t dy = y - 120, hw = 0, u, v, du, dv;
+        uint16_t *row = cv_px + (uint32_t)(y - y0) * 240u;
+        while ((hw + 1) * (hw + 1) + dy * dy <= R * R) hw++;
+        if (!hw) continue;
+        u = (half << 16) + ((-hw) * C + dy * S) * 172, v = (half << 16) + (hw * S + dy * C) * 172;   /* (16.16, from the row's left end) */
+        du = C * 172, dv = -S * 172;
+        for (x = 120 - hw; x <= 120 + hw; x++, u += du, v += dv) {
+            uint32_t uu = (uint32_t)(u >> 16), vv = (uint32_t)(v >> 16);
+            if (uu < c->w && vv < c->h) row[x] = swap16(c->pal[VP_AT(vv * c->w + uu)]);
+        }
+    }
+}
+static UI_NOINLINE void rc2_step(void)
+{
+    const vp_clip_t *c = &VP_CLIPS[1];
+    int32_t play = nk_mask || ev_lvl > 12 || song.playing;
+    uint32_t per = 1000u * 120u / ((uint32_t)c->fps * (uint32_t)(song.playing ? clamp(song.g[G_BPM], 40, 240) : 120));
+    if (vp_on != 1u) vp_on = 1, rc2_cur = -1, rc2_goto(c, 0), vp_t = fm1_ms;
+    rc2_ang -= play ? 4 + wv_bass() / 6 : 2;                           /* (it turns for ever: the clip's frames were set upright, the turn is ours) */
+    if (!play) { rc2_goto(c, 0); return; }   /* still: looking at the screen */
+    if (fm1_ms - vp_t >= per) { vp_t = fm1_ms; rc2_goto(c, rc2_cur >= 8 || rc2_cur < 1 ? 1 : rc2_cur + 1); }
+}
+static UI_NOINLINE void wvf_step(void)                              /* the whole screen's picture, 20 fps */
+{
+    static uint8_t last = 0xFF;
+    int32_t i;
+    wv_w = WVF_N, wv_h = WVF_N;
+    if (!wvf_on || last != gv_mode) {
+        wvf_on = 1, last = gv_mode, vp_on = 0xFF;
+        memset(wv_mem, 0, sizeof wv_mem);
+        wvf_vu_n[0] = wvf_vu_n[1] = 0;
+        for (i = 0; i < WVF_STARS; i++) wvf_new(i, 0);
+    }
+    nk_step(), nc_spec();
+    if (gv_mode < 4u) { wv_draw(gv_mode); return; }
+    wv_ph++;
+    wvf_hits();
+    switch (gv_mode) {
+    case GV_RACER: case GV_DRIVE: rd_step(); break;
+    case GV_SHIP: sh_step(); break;
+    case GV_WATER: ne_hist(16, 19); break;
+    case GV_STUDY: lf_step(); break;
+    case GV_RACCOON: rc2_step(); break;
+    case GV_ORB: orb_step(); break;
+    case GV_TAPE: v2_tape_step(); break;
+    case GV_CURVES: {                                                  /* six parts of the spectrum, 40 moments, the newest at 0 */
+        uint32_t x, c;
+        for (x = 39; x > 0u; x--) for (c = 0; c < 6u; c++) wv_mem[x * 6u + c] = wv_mem[(x - 1u) * 6u + c];
+        for (c = 0; c < 6u; c++) wv_mem[c] = (uint8_t)((wf_spec[c * 3u] + wf_spec[c * 3u + 1u] + wf_spec[c * 3u + 2u]) / 3u);
+        break;
+    }
+    default: break;
+    }
+}
+static UI_NOINLINE uint16_t wvf_col(uint32_t v)                     /* the colour of a lit cell of the whole screen */
+{
+    uint32_t l = ((v & 15u) - 1u) >> 2;
+    if (gv_mode == GV_SHIP) return WVF_PAL[0][l];
+    return WV_PAL[wv_pal_of(gv_mode)][l];
+}
+static UI_NOINLINE void wvf_cells(int32_t y0, int32_t hh)          /* the cells of rows y0 .. y0 + hh of the screen */
+{
+    int32_t x, y;
+    for (y = y0 / 3; y < WVF_N && y * 3 < y0 + hh; y++)
+        for (x = 0; x < WVF_N; x++) {
+            uint32_t v = wv_mem[y * WVF_N + x];
+            if (v & 15u) WFR(x * 3, y * 3, 3, 3, wvf_col(v));
+        }
+}
+static UI_NOINLINE void wvf_paint(void)
+{
+    int32_t y0 = 0;
+    while (y0 < 240) {
+        int32_t hh = 240 - y0 < 123 ? 240 - y0 : 123;
+        cv_begin(240, (uint32_t)hh, C_BLACK);
+        cv_ox = 0, cv_oy = -y0;
+        wf_rx = 0, wf_ry = y0, wf_rw = 240, wf_rh = hh;
+        if (!GV_PIX(gv_mode)) wvf_cells(y0, hh);
+        else switch (gv_mode) {
+        case GV_SHIP: sh_draw(0, 0, 240, 240, 3, 1); break;
+        case GV_RACER: v2_racer(); break;
+        case GV_DRIVE: v2_drive(); break;
+        case GV_SYNTH: v2_synth(); break;
+        case GV_WATER: ne_waterfall(); break;
+        case GV_CURVES: ne_curves(); break;
+        case GV_FLOW: v3_flow(); break;
+        case GV_PATCH: v4_patch(); break;
+        case GV_TARGET: v4_tesseract(); break;
+        case GV_BLUEPRINT: v3_blueprint(); break;
+        case GV_NEO: v2_neo(); break;
+        case GV_SMOKE: v2_smoke(); break;
+        case GV_DOOM: v2_doom(); break;
+        case GV_ROOM: ne_room(); break;
+        case GV_FLOAT: ne_float(); break;
+        case GV_HOUND: v3_hound(); break;
+        case GV_BOXER: v3_boxer(); break;
+        case GV_CHORDS: v5_chords(); break;
+        case GV_DANCE: ne_dance(); break;
+        case GV_DUEL: ne_duel(); break;
+        case GV_STUDY: vp_paint((uint32_t)GV_CLIP(gv_mode), y0, hh); break;
+        case GV_RACCOON: rc2_paint(y0, hh); break;
+        case GV_ORB: orb_paint(); break;
+        case GV_TAPE: v2_tape(); break;
+        default: break;
+        }
+        if (fm1_ms - wvf_sel_t < 4000u) wvf_foot();
+        cv_ox = 0, cv_oy = 0;
+        cv_blit(0, (uint32_t)y0);
+        y0 += hh;
     }
 }
 
@@ -1738,6 +5219,7 @@ static uint32_t wf_t_lcd, wf_t_mq, wf_t_vz, wf_lastcur = 0xFFFFFFFFu;
 static uint8_t wf_lastsel = 0xFF;
 static uint32_t wf_lastview = 0xFFFFFFFFu;
 
+static int wfm_vis_open(void) { return !ui.menu && (wf_view == 2u || wf_view == 4u) && !ui.home && cur_page()->scope == SC_TRK; }   /* a visualizer is on screen */
 static UI_NOINLINE int wfm_here(void) { return !ui.menu && (rec_wait || ft_on || (!ui.home && cur_page()->scope == SC_TRK)); }
 
 static void wfm_draw_(void);
@@ -1767,7 +5249,14 @@ static UI_NOINLINE void wfm_draw_(void)
     uint32_t now = fm1_ms, k, i, full, tot, cur;
     int16_t *vp;
     if (song.playing && !wf_was_play) wf_t0 = now;
-    wf_was_play = song.playing;
+    if (!wf_pg && wf_view == 4u && !wf_recmode()) {                    /* the visualizer on the whole screen */
+        int step = now - wf_t_vz >= 50u;                               /* 20 fps */
+        if (now - wf_t_lcd >= 40u) { wf_t_lcd = now; wf_spectrum(); }  /* (the spectrum goes on: the player is not drawn) */
+        if (step) { wf_t_vz = now; wvf_step(); }
+        if (step || ui.force) wvf_paint();
+        wf_was_play = song.playing;
+        return;                                                        /* (wf_frame untouched: the windows paint all again after it) */
+    }
     full = ui.force || ui.frame != wf_frame + 1u;
     wf_frame = ui.frame;
     if (wf_pg == 4u) wf_step_tiles();                                  /* (before any paint) */
@@ -1899,8 +5388,9 @@ static UI_NOINLINE void wfm_show(uint32_t view)                      /* open a w
 static void wfm_tapes_open(void);
 static UI_NOINLINE void wfm_home_tap(void)
 {
-    wf_view = wf_view == 1u ? 0u : wf_view == 0u ? 2u : wf_view == 2u ? 3u : 1u;   /* EFFECTS -> PLAYLIST -> VISUALIZER -> TAPES */
+    wf_view = wf_view == 1u ? 0u : wf_view == 0u ? 2u : wf_view == 2u ? 4u : wf_view == 4u ? 3u : 1u;   /* EFFECTS -> PLAYLIST -> VISUALIZER -> WARP -> TAPES */
     if (wf_view == 3u) wfm_tapes_open();
+    if (wf_view == 4u) wvf_sel_t = fm1_ms | 1u;                        /* (the names, as it comes in) */
     wf_say(13);
 }
 
@@ -1914,7 +5404,12 @@ static UI_NOINLINE int wfm_knobs(void)
     if ((s = panel_enc(EN_SELECT)) != 0) {
         if (wf_view == 2u) {
             wv_mode = (uint8_t)((wv_mode + (s > 0 ? 1u : WV_N - 1u)) % WV_N);
+            gv_mode = (uint8_t)WV_GV(wv_mode);                         /* (the whole screen shows the same) */
             wf_say(14);
+        } else if (wf_view == 4u) {                                    /* the whole screen: its ten pictures; the window's five are the window's too */
+            gv_mode = (uint8_t)((gv_mode + (s > 0 ? 1u : GV_N - 1u)) % GV_N);
+            if (GV_WIN(gv_mode) >= 0) wv_mode = (uint8_t)GV_WIN(gv_mode);
+            wvf_sel_t = fm1_ms | 1u;
         } else {
             if (wf_view == 1u) wf_grp = (uint8_t)clamp((int32_t)wf_grp + (s > 0 ? 1 : -1), 0, 4);
             wf_view = 1;
@@ -1997,7 +5492,7 @@ static void wfm_splash(void)
         wf_textc(120, 160, 1, "SYNTH FOR THE FM-1", WC_LAB);
         wf_inset(14, 186, 212, 13, WC_LCD);
         wf_textc(120, 189, 1, "*** LOADING ***", WC_GRN);
-        wf_textc(120, 210, 0, "WINAMPFM 0.11  BASED ON SLOOP 2.6  GPL-3.0", WC_LOFF);
+        wf_textc(120, 210, 0, "WINAMPFM 0.12  BASED ON SLOOP 2.6  GPL-3.0", WC_LOFF);
         cv_ox = 0, cv_oy = 0;
         cv_blit(0, (uint32_t)y0);
     }

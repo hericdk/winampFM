@@ -240,11 +240,12 @@ static void drum_audition_poll(void)
 
 /* winampFM (from FM1 Quest): a track playing one sound of a synthesised kit (the Brazilian instruments, track 3) hits it here,
  * the hit mixed with the drums but following that track's mute / solo (fx.c drums mix: drums.own) */
+static volatile uint16_t drum_vis_hits;        /* winampFM: the lanes hit since the screen last looked (its pictures read and clear it) */
 static void drum_on_ko(uint32_t kit, uint32_t note, uint32_t vel, uint32_t own)
 {
     if (kit < DRUM_SAMPLED || kit >= DRUM_SAMPLED + DS_NKITS)
         return;
-    drums.hits |= (uint16_t)(1u << lane_of_note(note));
+    drums.hits |= (uint16_t)(1u << lane_of_note(note)), drum_vis_hits |= (uint16_t)(1u << lane_of_note(note));
     drum_synth_on(note, vel, kit, DS_KITS[kit - DRUM_SAMPLED].s, DS_KITS[kit - DRUM_SAMPLED].crush, own);
 }
 static void drum_on(uint32_t note, uint32_t vel)
@@ -255,7 +256,7 @@ static void drum_on(uint32_t note, uint32_t vel)
     uint32_t i, zi = 0xFFFFu, kit = drum_kit();
     int32_t zid = -1;
     if (note != 76u && note != 77u)                 /* the pads and key LEDs (not the click's wood block) */
-        drums.hits |= (uint16_t)(1u << lane_of_note(note));
+        drums.hits |= (uint16_t)(1u << lane_of_note(note)), drum_vis_hits |= (uint16_t)(1u << lane_of_note(note));
     if (note == 35u || note == 36u)
         drums.kick = 1;                             /* (DUCK) */
     if (kit >= DRUM_SYN) {                          /* SYN1..SYN4: your synthesised kit */

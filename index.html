@@ -34,6 +34,29 @@
   header.top { display: flex; justify-content: space-between; align-items: center; padding: 18px 0; }
   header.top .name { font: 600 22px "Pixelify Sans", monospace; color: var(--gold); text-decoration: none; display: flex; gap: 10px; align-items: center; }
   header.top .name i { width: 14px; height: 20px; background: var(--org); clip-path: polygon(45% 0, 100% 0, 62% 38%, 92% 38%, 20% 100%, 40% 52%, 8% 52%); }
+  /* the top bar's right side: the credit, the networks (their notes on hover, as on the FM1 Quest page), the languages */
+  .tr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+  .credit { position: relative; font: 12px/1 "Pixelify Sans", monospace; color: var(--dim); padding: 6px 10px; border: 1px solid #f0c860; border-radius: 6px;
+            transition: color .25s, border-color .25s .4s; white-space: nowrap; }
+  .credit a { color: inherit; text-decoration: none; }
+  .credit .ph { width: 14px; height: 12px; fill: #e8303c; shape-rendering: crispEdges; vertical-align: -2px; margin: 0 2px; }   /* (a heart in pixels) */
+  .credit .sep { opacity: .5; margin: 0 2px; }
+  .credit a:hover { text-decoration: underline; }
+  .credit::before, .credit::after { content: ""; position: absolute; left: -1px; right: -1px; height: 1px; background: #fff; transform: scaleX(0); transform-origin: left; pointer-events: none; }
+  .credit::before { top: -1px; } .credit::after { bottom: -1px; }
+  .credit:hover { color: #fff; border-color: transparent; }
+  .credit:hover::before, .credit:hover::after { animation: crsweep .9s cubic-bezier(.16, 1, .3, 1) forwards; }
+  @keyframes crsweep { 0% { transform: scaleX(0); opacity: 1; } 50% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(1); opacity: 0; } }
+  .soc { display: flex; gap: 6px; }
+  .sw { position: relative; display: inline-flex; }
+  .ib { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 8px; color: var(--txt); transition: background .2s, color .2s; }
+  .ib:hover { background: var(--line); color: #fff; }
+  .ib svg { width: 17px; height: 17px; fill: currentColor; }
+  .tip { display: none; position: absolute; top: calc(100% + 10px); right: -8px; width: min(300px, 82vw); background: var(--bg2); border: 1px solid var(--gold); border-radius: 8px;
+         padding: 12px 14px; font-size: 13px; line-height: 1.45; color: var(--txt); z-index: 80; text-align: left; box-shadow: 0 10px 30px #0009; }
+  .tip b { color: var(--org2); font-size: 15px; }
+  .sw:hover .tip, .sw:focus-within .tip { display: block; }
+  @media (max-width: 640px) { header.top { flex-wrap: wrap; gap: 10px; } .tr { width: 100%; justify-content: space-between; } }
   .lang { display: flex; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
   .lang button { font: 13px "Pixelify Sans", monospace; background: none; color: var(--dim); border: 0; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
   .lang button[aria-pressed="true"] { background: var(--line); color: #fff; }
@@ -111,7 +134,18 @@
 <div class="wrap">
   <header class="top">
     <a class="name" href="#"><i></i>winampFM</a>
-    <div class="lang" role="group" aria-label="Language"><button data-set="en" aria-pressed="true">EN</button><button data-set="pt" aria-pressed="false">PT</button></div>
+    <div class="tr">
+      <span class="credit">Made with <svg class="ph" viewBox="0 0 7 6" aria-label="love" role="img"><path d="M1 0h2v1h1V0h2v1h1v2H6v1H5v1H4v1H3V5H2V4H1V3H0V1h1z"/></svg> by <a href="https://www.youtube.com/@_heric" target="_blank" rel="noopener">hericdk</a> <span class="sep">-</span> website dev: <a href="https://raincake.com.br" target="_blank" rel="noopener">raincake.com.br</a></span>
+      <div class="soc">
+        <span class="sw"><a class="ib" href="https://github.com/hericdk/winampFM" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+          <span class="tip" role="tooltip"><span lang="en"><b>The source</b><br>The whole firmware, open (GPL-3.0). Use the features in your own work: just credit winampFM in your README or video.</span><span lang="pt"><b>O código</b><br>O firmware inteiro, aberto (GPL-3.0). Use as funções no seu trabalho: só dê o crédito ao winampFM no README ou no vídeo.</span></span></span>
+        <span class="sw"><a class="ib" href="https://www.instagram.com/hericdk/" target="_blank" rel="noopener" aria-label="Instagram"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 2h9A5.5 5.5 0 0 1 22 7.5v9a5.5 5.5 0 0 1-5.5 5.5h-9A5.5 5.5 0 0 1 2 16.5v-9A5.5 5.5 0 0 1 7.5 2zm0 2A3.5 3.5 0 0 0 4 7.5v9A3.5 3.5 0 0 0 7.5 20h9a3.5 3.5 0 0 0 3.5-3.5v-9A3.5 3.5 0 0 0 16.5 4h-9zM12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm5.2-3.2a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4z"/></svg></a>
+          <span class="tip" role="tooltip"><span lang="en"><b>Real-life side quests</b><br>My personal space to share the progress of my technology studies: learning synths, improvements and tests with winampFM and FM1 Quest, and robotics prototypes with ESP32.</span><span lang="pt"><b>Side quests da vida real</b><br>Meu espaço pessoal para compartilhar o progresso dos meus estudos de tecnologia: aprendendo synth, melhorias e testes com o winampFM e o FM1 Quest, e protótipos de robótica com ESP32.</span></span></span>
+        <span class="sw"><a class="ib" href="https://www.youtube.com/@_heric" target="_blank" rel="noopener" aria-label="YouTube"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 7.2a2.6 2.6 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4A2.6 2.6 0 0 0 2.4 7.2C2 8.8 2 12 2 12s0 3.2.4 4.8a2.6 2.6 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.6 2.6 0 0 0 1.8-1.8c.4-1.6.4-4.8.4-4.8s0-3.2-.4-4.8zM10 15V9l5.2 3L10 15z"/></svg></a>
+          <span class="tip" role="tooltip"><span lang="en"><b>Demos and updates</b><br>Videos of winampFM and FM1 Quest updates in action, development guides so more people can create with their own creativity, and some behind the scenes.</span><span lang="pt"><b>Demonstrações e atualizações</b><br>Vídeos das atualizações do winampFM e do FM1 Quest em ação, guias de desenvolvimento para mais gente criar com a própria criatividade, e alguns bastidores.</span></span></span>
+      </div>
+      <div class="lang" role="group" aria-label="Language"><button data-set="en" aria-pressed="true">EN</button><button data-set="pt" aria-pressed="false">PT</button></div>
+    </div>
   </header>
 
   <section class="hero">
@@ -124,7 +158,7 @@
   <section class="inst" id="install">
     <div class="ihead">
       <button id="go" disabled data-t="install"></button>
-      <span class="ver"><b>winampFM v0.11</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
+      <span class="ver"><b>winampFM v0.12</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
       <div class="imeta"><p class="small" data-t="intro"></p><p class="small" data-t="warn"></p></div>
     </div>
     <div class="prog"><progress id="bar" max="100" value="0"></progress><span id="pct">0%</span></div>
@@ -692,7 +726,7 @@ const sayK = (k, arg = "") => { lastKey = k; lastArg = arg; $("status").textCont
 const say = (txt) => { lastKey = null; $("status").textContent = txt; };
 const log = (t) => { $("log").textContent += t + "\n"; };
 let image = null;
-const meta = {"version": "0.11", "product": "FM-1_900", "pkg": "release/winampfm-0.11.fwsc", "sha256": "4713d17b252353abadfb23a440e0fb4d6b3fe158498d5bafc100894241c2bda3"};
+const meta = {"version": "0.12", "product": "FM-1_900", "pkg": "release/winampfm-0.12.fwsc", "sha256": "bc59519fb08657efa7e0e4cf78ee9482aae11cd063aea21f844abb5bf3e7a7c2"};
 
 let writing = false, stock = null;
 const lockAll = (on) => {

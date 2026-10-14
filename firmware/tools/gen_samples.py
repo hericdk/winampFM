@@ -40,7 +40,8 @@ GENDIR = SRC / "build" / "genwav"
 CACHE = SRC / "build" / "gen_samples.cache"
 CC0 = SRC / "assets" / "samples-cc0"
 TR = 22050                                   # stored sample rate
-SET_RATE = {"BASS": 16000, "FLUTE": 16000, "HORNS": 16000}   # (so every set fits the flash)
+SET_RATE = {"BASS": 11025, "PIANO": 16000, "VIBES": 16000, "STRGS": 16000, "SCRCH": 16000, "FLUTE": 16000, "HORNS": 16000,
+            "CAVAQ": 16000, "AGOGO": 16000, "SANFO": 16000}   # (so every set fits the flash with the whole screen's pictures: only the top is lost)
 
 # set -> kind ("oneshot" decaying, "sus" looped sustain, "piano" its attack then a steady loop that the
 # envelope fades, "kit" one sample per key).
@@ -97,7 +98,8 @@ GM_ROLE_WORDS = [("bassdrum", "kick"), ("kick", "kick"), ("snare", "snare"), ("h
                  ("conga", "conga"), ("claves", "claves"), ("wood", "wood"), ("crash", "crash"), ("ride", "ride")]
 GM_KEEP = {"crash": 0.6, "ride": 0.6, "ohh": 0.6}   # (SLOOP 2.5: the cymbals 1.0 -> 0.6 s, 12.8 KB of flash back;
                                                       # the first 0.44 s as recorded, then a fade: GM_FADE)
-GM_RATE = {"chh": 32000, "ohh": 32000, "crash": 32000, "ride": 32000}   # the metal keeps its top (else TR)
+GM_RATE = {"chh": 22050, "ohh": 22050, "crash": 22050, "ride": 22050}   # the metal keeps its top (the rest of the kit: KIT_RATE)
+KIT_RATE = 16000                             # the kit's skins and wood: the top is not missed
 # an acoustic kit from the CC0 recordings (assets/samples-cc0/KIT: VCSL): the concert bass drum and the toms
 # get a shorter body (a kit's tuned-up, damped heads): their level falls as exp(-t / tau) after a hold
 GM_SHAPE = {"kick": (0.03, 0.13), "tomlo": (0.04, 0.22), "tomhi": (0.04, 0.2)}
@@ -341,7 +343,7 @@ class Builder:
         """one GM-mapped kit: the CC0 acoustic kit"""
         z0 = len(self.zones)
         for role, path in gm_kit_sources(have_cc0).items():
-            rate = GM_RATE.get(role, TR) if path.parent.name == "KIT" else TR
+            rate = GM_RATE.get(role, KIT_RATE) if path.parent.name == "KIT" else TR
             smp = gm_kit_entry(role, path, rate)
             off, st = self.add(smp, len(smp))
             for lo, hi, root in GM_KIT[role]:
