@@ -8,6 +8,6 @@ ROOT=$(pwd)
 "${PYTHON:-python3}" -c "import sys; sys.path.insert(0, '$ROOT/tools'); import build; build.generate()" >/dev/null
 "${PYTHON:-python3}" -m ziglang cc --target=wasm32-freestanding -O2 -fno-builtin -ffreestanding -nostdlib -w \
   -I "$ROOT/build/gen" -I "$ROOT/firmware/src" -I wasm \
-  -Wl,--no-entry -Wl,--export-memory -Wl,-z,stack-size=1048576 -Wl,--global-base=1048576 \
+  -s -Wl,--no-entry -Wl,--export-memory -Wl,-z,stack-size=1048576 -Wl,--global-base=1048576 \
   -o ../sim/winampfm.wasm wasm/winampfm_wasm.c
 ls -la ../sim/winampfm.wasm
