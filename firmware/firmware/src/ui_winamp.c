@@ -387,7 +387,7 @@ static UI_NOINLINE uint32_t wf_list(uint32_t *total)    /* the list of the selec
         *total = DRUM_KITS;
         return (uint32_t)clamp(TDRUM->p[P_E0], 0, DRUM_KITS - 1);
     }
-    return preset_pos(total);
+    return base_pos(total);                                            /* (SLOOP 2.7: the list without the favourites on top: wf_item names it) */
 }
 static UI_NOINLINE void wf_item(uint32_t n, char *name, const char **kind)
 {
@@ -577,6 +577,8 @@ static UI_NOINLINE uint16_t wf_trk_led(uint32_t i)
     if (t->p[P_MUTE] || (song.solo && !((song.solo >> i) & 1u))) return WC_AMB;
     return track_empty(t) ? WC_GDIM : WC_GRN;
 }
+static uint32_t wf_chd;                       /* the chord in the display: 0 none, else 1 + CH_TPL's index, its root << 8 */
+static UI_NOINLINE void wf_chord_draw(int32_t x, int32_t y);
 static UI_NOINLINE void wf_player(void)
 {
     char b[16];
@@ -595,12 +597,15 @@ static UI_NOINLINE void wf_player(void)
         if (wf_recording() || (rec_wait && (fm1_ms / 400u) & 1u))                          /* recording: a red dot under it */
             WFR(LCD_X + 7, LCD_Y + 20, 6, 6, WC_RED);
         x = LCD_X + 33;
+        if (wf_chd) wf_chord_draw(LCD_X + 22, LCD_Y + 6);
+        else {
         wf_digit(x, LCD_Y + 4, (m / 10u) % 10u, WC_GRN);
         wf_digit(x + 14, LCD_Y + 4, m % 10u, WC_GRN);
         WFR(x + 28, LCD_Y + 9, 2, 3, WC_GRN);
         WFR(x + 28, LCD_Y + 17, 2, 3, WC_GRN);
         wf_digit(x + 33, LCD_Y + 4, (s % 60u) / 10u, WC_GRN);
         wf_digit(x + 47, LCD_Y + 4, s % 10u, WC_GRN);
+        }
         {
             uint32_t ag = wft_age();                                                       /* a tape copied: the bars blow up, new ones rise with a swing */
             int32_t gone = ag >= 650u && ag < 1050u, k = ag >= 1050u && ag < 1650u ? wf_back((int32_t)(ag - 1050u) * 1024 / 600) : 1024;
@@ -1958,6 +1963,7 @@ static UI_NOINLINE void sc_vortex(void)
     sc_rect(34, 38 - (wvf_hit_n > 2 ? 3 : 0), 8, 8, 15);
 }
 static UI_NOINLINE void wf_big(int32_t x, int32_t y, int32_t z, const char *s, uint16_t col);
+static UI_NOINLINE int32_t wf_bigw(int32_t z, const char *s);
 /* NEO: a neon city at night (after the anime ones): towers in two layers with windows the bands light, searchlights sweeping, green street
  * lamps; on the kick a red motorbike tears across leaving a long red light trail */
 static int32_t neo_bike = -1000;
@@ -3140,11 +3146,10 @@ static const ch_tpl_t CH_TPL[] = {
 static const char *const CH_NOTE[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static int32_t ch_tpl = 3, ch_root = 9, ch_rings[10][4];
 static uint32_t ch_ph, ch_seg[4];
-static UI_NOINLINE void ch_find(uint32_t keys)
+static UI_NOINLINE void ch_find_pcs(uint32_t pcs)
 {
-    uint32_t pcs = 0, k, best = 0;
+    uint32_t best = 0;
     int32_t t, root, bt = -1, br = 0;
-    for (k = 0; k < 27u; k++) if ((keys >> k) & 1u) pcs |= 1u << ((k + 5u) % 12u);   /* (key 0 is the F) */
     if (!pcs) return;
     for (root = 0; root < 12; root++) {
         uint32_t rel;
@@ -3156,6 +3161,36 @@ static UI_NOINLINE void ch_find(uint32_t keys)
         }
     }
     if (bt >= 0) ch_tpl = bt, ch_root = br;
+}
+static UI_NOINLINE void ch_find(uint32_t keys)
+{
+    uint32_t pcs = 0, k;
+    for (k = 0; k < 27u; k++) if ((keys >> k) & 1u) pcs |= 1u << ((k + 5u) % 12u);   /* (key 0 is the F) */
+    ch_find_pcs(pcs);
+}
+/* the chord under the fingers, in the player's time display, as the track's scale plays it; the time comes back 0.6 s after */
+static uint32_t wf_chd_t;
+static UI_NOINLINE void wf_chord_step(void)
+{
+    uint32_t pcs = 0, k, n = 0;
+    if (!is_drum(TSEL) && layer_now() == LY_PLAY)
+        for (k = 0; k < 27u; k++)
+            if ((fm1_in.notes >> k) & 1u) {
+                uint32_t nt = kb_map(TSEL, k);
+                if (nt != KB_SILENT && !((pcs >> (nt % 12u)) & 1u)) pcs |= 1u << (nt % 12u), n++;
+            }
+    if (n >= 2u) {
+        ch_find_pcs(pcs);
+        wf_chd = ch_tpl < 10 ? 1u + (uint32_t)ch_tpl + ((uint32_t)ch_root << 8) : 0u;
+        wf_chd_t = fm1_ms;
+    } else if (fm1_ms - wf_chd_t > 600u) wf_chd = 0;
+}
+static UI_NOINLINE void wf_chord_draw(int32_t x, int32_t y)
+{
+    static const char *const SH[10] = {"MIN7", "MAJ7", "7", "MIN", "MAJ", "DIM", "AUG", "SUS4", "SUS2", "5TH"};
+    const char *nm = CH_NOTE[(wf_chd >> 8) % 12u];
+    wf_big(x, y, 2, nm, WC_GRN);
+    wf_text(x + wf_bigw(2, nm) + 2, y + 7, 1, SH[((wf_chd & 255u) - 1u) % 10u], WC_GRN);
 }
 static UI_NOINLINE void v5_chords(void)
 {
@@ -3994,7 +4029,7 @@ static UI_NOINLINE void v2_tape_step(void)
     tp_ang++;                                                          /* round and round, as on a select screen: a turn every ~3 s */
     tp_bob += (wv_bass() * 2 - tp_bob) / 6;
     a = (uint32_t)tp_ang & 63u;
-    wt_make(preset_pos(&tot), ((a + 16u) & 63u) >= 32u, song.playing ? fm1_ms / 55u : 0u);
+    wt_make(base_pos(&tot), ((a + 16u) & 63u) >= 32u, song.playing ? fm1_ms / 55u : 0u);
 }
 static UI_NOINLINE void v2_tape(void)
 {
@@ -4572,11 +4607,37 @@ static UI_NOINLINE void wvf_cells(int32_t y0, int32_t hh)          /* the cells 
             if (v & 15u) WFR(x * 3, y * 3, 3, 3, wvf_col(v));
         }
 }
+/* the whole screen takes the LCD ~77 ms (SPI ~12 MHz): only the slices of 12 rows that changed since the last picture go */
+#define WVF_SL 12
+static uint32_t wvf_sum[240 / WVF_SL], wvf_fr;
+static UI_NOINLINE void wvf_send(int32_t y0, int32_t hh)
+{
+    int32_t s, start = -1, n = hh / WVF_SL;
+    if (tr_kind || cv_ban_h) {                                         /* (a transition or a banner over it: all of it, then all again) */
+        for (s = 0; s < 240 / WVF_SL; s++) wvf_sum[s] = 0;
+        cv_blit(0, (uint32_t)y0);
+        return;
+    }
+    for (s = 0; s <= n; s++) {
+        int same = 0;
+        if (s < n) {
+            const uint16_t *q = cv_px + (uint32_t)(s * WVF_SL) * 240u;
+            uint32_t i, h = 2166136261u, *e = &wvf_sum[(y0 / WVF_SL + s)];
+            for (i = 0; i < 240u * WVF_SL; i++) h = (h ^ q[i]) * 16777619u;
+            same = h == *e, *e = h;
+        }
+        if (s < n && !same) { if (start < 0) start = s; }
+        else if (start >= 0) {
+            lcd_blit(0, (uint32_t)(y0 + start * WVF_SL), 240, (uint32_t)((s - start) * WVF_SL), cv_px + (uint32_t)(start * WVF_SL) * 240u);
+            start = -1;
+        }
+    }
+}
 static UI_NOINLINE void wvf_paint(void)
 {
     int32_t y0 = 0;
     while (y0 < 240) {
-        int32_t hh = 240 - y0 < 123 ? 240 - y0 : 123;
+        int32_t hh = 120;
         cv_begin(240, (uint32_t)hh, C_BLACK);
         cv_ox = 0, cv_oy = -y0;
         wf_rx = 0, wf_ry = y0, wf_rw = 240, wf_rh = hh;
@@ -4610,7 +4671,7 @@ static UI_NOINLINE void wvf_paint(void)
         }
         if (fm1_ms - wvf_sel_t < 4000u) wvf_foot();
         cv_ox = 0, cv_oy = 0;
-        cv_blit(0, (uint32_t)y0);
+        wvf_send(y0, hh);
         y0 += hh;
     }
 }
@@ -4627,6 +4688,130 @@ static UI_NOINLINE int wfm_page_ok(void)     /* a page this window can show (the
     if (pg->scope == SC_TRK || pg->scope == SC_SONG || pg->scope == SC_DRUM) return 0;
     return 1;
 }
+/* the strip above the sliders on a page with a shape: what its knobs make (it does not move by itself, less to send to the LCD) */
+static UI_NOINLINE int wf_hasfig(const page_t *pg)
+{
+    return pg->graph == GR_ADSR || pg->graph == GR_LFO || pg->graph == GR_SCALE || pg->graph == GR_SLCR || pg->graph == GR_WAVE || pg->fam == FAM_ARP || pg->id[0] == P_FTYPE;
+}
+static UI_NOINLINE int32_t wf_figy(const page_t *pg, int32_t x, int32_t W, int32_t H)   /* the curve at x, 0..H */
+{
+    const int16_t *p = TSEL->p;
+    if (pg->graph == GR_ADSR) {                                        /* attack, decay, sustain held, release */
+        int32_t q = W / 4, xa = p[P_ATK] * q / 127, xd = xa + p[P_DEC] * q / 127, xr = W - p[P_REL] * q / 127, s = p[P_SUS] * H / 127;
+        if (x < xa) return x * H / xa;
+        if (x < xd) return H - (x - xa) * (H - s) / (xd - xa);
+        if (x < xr) return s;
+        return W > xr ? s - (x - xr) * s / (W - xr) : s;
+    }
+    if (pg->graph == GR_LFO) {                                         /* its wave, more turns the faster, growing through FADE */
+        uint32_t an = ((uint32_t)x * (1u + (uint32_t)p[P_LRATE] / 20u) * 256u / (uint32_t)W + (uint32_t)p[P_LPHASE] * 2u) & 255u, wv = (uint32_t)p[P_LWAVE];
+        int32_t v = wv == 0u ? wv_sin4(an) : wv == 1u ? (an < 128u ? (int32_t)an * 2 - 127 : 383 - (int32_t)an * 2) : wv == 2u ? (int32_t)an - 127 : wv == 3u ? (an < 128u ? 127 : -127) : ((int32_t)((an >> 4) * 2654435761u >> 24) - 127);
+        int32_t fw = p[P_LFADE] * W / 127;
+        if (x < fw) v = v * x / fw;
+        return H / 2 + v * H / 254;
+    }
+    {                                                                  /* ANALOG's filter: its response, the peak at CUT by RES */
+        int32_t d = x - p[P_E4] * W / 127, ty = p[P_FTYPE], a = d < 0 ? -d : d, v = H * 2 / 3;
+        if (ty == 0 && d > 0) v -= d / 3;
+        if (ty == 2 && d < 0) v -= a / 3;
+        if (ty == 1) v -= a / 3;
+        if (a < 9) v += p[P_E5] * (9 - a) * H / (127 * 27);
+        return clamp(v, 0, H);
+    }
+}
+static UI_NOINLINE void wf_pagefig(const page_t *pg, int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    static const uint8_t AP[15][8] = {{3, 3, 3, 3, 3, 3, 3, 3}, {0, 1, 2, 3, 4, 5, 6, 7}, {7, 6, 5, 4, 3, 2, 1, 0}, {0, 2, 4, 6, 7, 5, 3, 1}, {3, 6, 1, 7, 0, 4, 2, 5},
+        {2, 0, 5, 3, 7, 1, 6, 4}, {3, 3, 3, 3, 3, 3, 3, 3}, {7, 5, 3, 1, 0, 2, 4, 6}, {0, 2, 4, 7, 0, 2, 4, 7}, {0, 7, 1, 6, 2, 5, 3, 4},
+        {3, 4, 2, 5, 1, 6, 0, 7}, {0, 7, 2, 7, 4, 7, 5, 7}, {0, 3, 0, 5, 0, 6, 0, 7}, {2, 3, 2, 1, 2, 3, 4, 3}, {6, 6, 6, 6, 6, 6, 6, 6}};
+    const int16_t *p = TSEL->p;
+    int32_t i, W = w - 2, H = h - 3, bot = y0 + h - 2, py = -1;
+    wf_inset(x0, y0, w, h, RGB(0x10, 0x10, 0x20));
+    if (pg->graph == GR_SCALE) {                                       /* the scale, the 12 notes: the root white, in the scale green */
+        uint32_t mask = scale_mask(TSEL);
+        for (i = 0; i < 12; i++) {
+            int32_t cx = x0 + 1 + i * W / 12, in = (mask >> (uint32_t)((i - p[P_ROOT] + 12) % 12)) & 1u, root = i == p[P_ROOT];
+            if (in) WFR(cx, y0 + 1, W / 12 - 1, h - 2, root ? WC_WHT : WC_GDIM);
+            wf_textc(cx + W / 24, y0 + 4, 0, CH_NOTE[i], root ? C_BLACK : in ? WC_GRN : RGB(0x4c, 0x4e, 0x70));
+        }
+    } else if (pg->graph == GR_SLCR) {                                 /* the slicer's 16 steps */
+        uint32_t pat = sl_pattern(TSEL);
+        for (i = 0; i < 16; i++)
+            WFR(x0 + 1 + i * W / 16, y0 + 2, W / 16 - 1, h - 4, (pat >> (uint32_t)i) & 1u ? (p[P_SLCR] ? WC_GRN : WC_GDIM) : RGB(0x26, 0x28, 0x40));
+    } else if (pg->fam == FAM_ARP) {                                   /* the notes as MODE plays them, as long as GATE, late by SWG */
+        uint32_t m = (uint32_t)p[P_AMODE] % 15u;
+        for (i = 0; i < 16; i++) {
+            int32_t c = W / 16, bw = 1 + (c - 2) * p[P_AGATE] / 127, cx = x0 + 1 + i * W / 16 + (i & 1 ? p[P_ASWING] * c / 200 : 0);
+            WFR(cx, bot - 2 - AP[m][i & 7] * (H - 2) / 7, bw, 3, m ? WC_GRN : RGB(0x4c, 0x4e, 0x70));
+        }
+    } else {
+        for (i = 0; i < W; i++) {                                      /* a curve, filled */
+            int32_t v = wf_figy(pg, i, W, H), a = py < 0 || py > v ? v : py, b = py > v ? py : v;
+            WFR(x0 + 1 + i, bot - v, 1, v + 1, WC_GDIM);
+            WFR(x0 + 1 + i, bot - b, 1, b - a + 1, WC_GRN);
+            py = v;
+        }
+    }
+}
+/* WAVE: the sample of a USR slot (the ½ sampler's), IN and OUT in orange, what they leave out faint, the loop in green, the play head in white */
+#define WW_Y (LO_Y + 16)
+#define WW_H 53
+static UI_NOINLINE int32_t wf_wave_head(uint32_t k, uint32_t n)
+{
+    uint32_t c;
+    for (c = 0; c < NVOICE; c++)
+        if (TSEL->v[c].active && (uint32_t)TSEL->v[c].s[4] >= 0x8000u && (((uint32_t)TSEL->v[c].s[4] >> 5) & 3u) == k)
+            return (int32_t)(TSEL->v[c].ph[0] / (n / 228u + 1u));
+    return -1;
+}
+static UI_NOINLINE uint32_t wf_wave_key(void)
+{
+    uint32_t si = (uint32_t)TSEL->p[P_E0] % SMP_NALL, k = si >= SMP_NSETS ? si - SMP_NSETS : 9u;
+    return k < SMP_USER_SLOTS && usr_nz[k] == 1u && usr_grid[k][0] ? (uint32_t)(wf_wave_head(k, usr_zone[k][0].n) + 2) : 0u;
+}
+static UI_NOINLINE void wf_wavewin(const page_t *pg)
+{
+    static const uint16_t OR = RGB(0xff, 0x5a, 0x1f);
+    uint32_t si = (uint32_t)TSEL->p[P_E0] % SMP_NALL, k = si >= SMP_NSETS ? si - SMP_NSETS : 9u, n = 0, hz = 0;
+    int32_t in = TSEL->p[P_E5], out = TSEL->p[P_E7], x, i, mx = 1, mid = WW_Y + WW_H / 2, ix = 6 + in * 228 / 128, ox = 233 - out * 228 / 128;
+    int ok = k < SMP_USER_SLOTS && usr_nz[k] == 1u && usr_grid[k][0];
+    char b[16];
+    const char *unit;
+    wf_inset(5, WW_Y, 230, WW_H, WC_LCD);
+    if (!ok) wf_textc(120, mid - 3, 1, k < SMP_USER_SLOTS ? "EMPTY SLOT" : "SOUND: USR1-USR4", WC_LAB);
+    else {
+        int32_t head;
+        n = usr_zone[k][0].n, hz = (usr_zone[k][0].rate * 44100u) >> 16;
+        for (x = 0; x < 240; x++) if (usr_peak[k][x] > mx) mx = usr_peak[k][x];
+        for (x = 0; x < 228; x++) {
+            int32_t a = usr_peak[k][x * 240 / 228] * (WW_H / 2 - 2) / mx, sx = 6 + x;
+            if (sx >= ix && sx <= ox) WFR(sx, mid - a, 1, 2 * a + 1, WC_GRN);
+            else if (!(x & 1)) WFR(sx, mid - a, 1, 2 * a + 1, RGB(0x30, 0x32, 0x50));
+        }
+        if (TSEL->p[P_E3] && (in || out)) WFR(ix, WW_Y + WW_H - 4, ox - ix + 1, 2, WC_GLD1);   /* (LOOP on a cut sound: between them, while the key is held) */
+        WFR(ix - 1, WW_Y + 1, 2, WW_H - 2, OR), WFR(ox, WW_Y + 1, 2, WW_H - 2, OR);
+        head = wf_wave_head(k, n);
+        if (head >= 0 && head < 228) WFR(6 + head, WW_Y + 1, 1, WW_H - 2, WC_WHT);
+    }
+    for (i = 0; i < 4; i++) {
+        int16_t *vp;
+        const param_desc_t *d = page_desc(pg, (uint32_t)i, &vp);
+        int32_t cx = 33 + i * 58, hot = ui.hot_t && ui.hot_col == (uint32_t)i;
+        if (!d || !vp) continue;
+        wf_textc(cx + 1, LO_Y + 71, 1, d->label, WF_KNOB[i]);
+        if (ok && i < 2 && hz) {                                       /* IN, OUT: where, in seconds */
+            uint32_t cs = (i ? n - (n >> 7) * (uint32_t)out : ((uint32_t)in * n) >> 7) / (hz / 100u + 1u);
+            fmt_int(b, (int32_t)(cs / 100u));
+            x = (int32_t)str_len(b);
+            b[x] = '.', b[x + 1] = (char)('0' + cs / 10u % 10u), b[x + 2] = (char)('0' + cs % 10u), b[x + 3] = 's', b[x + 4] = 0;
+        } else {
+            param_format(d, *vp, b, &unit);
+            str_cpy(b + str_len(b), unit, 16 - str_len(b));
+        }
+        wf_inset(cx - 26, LO_Y + 81, 53, 12, WC_LCD);
+        wf_textc(cx + 1, LO_Y + 84, 1, b, hot ? WC_WHT : WC_GRN);
+    }
+}
 static UI_NOINLINE void wf_pagewin(void)
 {
     const page_t *pg = cur_page();
@@ -4635,11 +4820,11 @@ static UI_NOINLINE void wf_pagewin(void)
     int32_t i, n = 0, x;
     uint32_t pi;
     if (wf_vis(4, LO_Y - 1, 232, 14)) {                                /* the tabs: the pages of this button */
-        for (pi = 0; pi < NPAGES; pi++) if (PAGES[pi].fam == pg->fam) n++;
+        for (pi = 0; pi < NPAGES; pi++) if (PAGES[pi].fam == pg->fam && page_shown(&PAGES[pi])) n++;
         x = 5;
         for (pi = 0; pi < NPAGES; pi++) {
             int32_t w;
-            if (PAGES[pi].fam != pg->fam) continue;
+            if (PAGES[pi].fam != pg->fam || !page_shown(&PAGES[pi])) continue;
             w = (230 - (n - 1) * 2) / n;
             wf_button(x, LO_Y, w, 13, pi == ui.page);
             if (n <= 4) {                                              /* few pages: LED and the name */
@@ -4673,9 +4858,13 @@ static UI_NOINLINE void wf_pagewin(void)
             const param_desc_t *d = page_desc(pg, (uint32_t)i, &vp);
             if (d && vp) xs[m] = 33 + i * 58, fr[m] = wf_frac(d, *vp), m++;
         }
-        if (m && wf_vis(4, LO_Y + 15, 232, 16)) wf_graph(5, LO_Y + 16, 230, 14, (uint32_t)m, xs, fr, -1, 0);
+        if (m && pg->graph != GR_WAVE && wf_vis(4, LO_Y + 15, 232, 16)) {
+            if (wf_hasfig(pg)) wf_pagefig(pg, 5, LO_Y + 16, 230, 14);
+            else wf_graph(5, LO_Y + 16, 230, 14, (uint32_t)m, xs, fr, -1, 0);
+        }
     }
-    for (i = 0; i < 4; i++) {
+    if (pg->graph == GR_WAVE) wf_wavewin(pg);
+    else for (i = 0; i < 4; i++) {
         int16_t *vp;
         const param_desc_t *d = page_desc(pg, (uint32_t)i, &vp);
         int32_t cx = 33 + i * 58, hot = ui.hot_t && ui.hot_col == (uint32_t)i;
@@ -4691,7 +4880,8 @@ static UI_NOINLINE void wf_pagewin(void)
         str_cpy(b + str_len(b), unit, 16 - str_len(b));
         wf_inset(cx - 26, LO_Y + 81, 53, 12, WC_LCD);
         wf_clx0 = cx - 25, wf_clx1 = cx + 26;
-        wf_textc(cx + 1, LO_Y + 84, 1, b, hot ? WC_WHT : WC_GRN);
+        if (wf_tw(1, b) > 51) wf_textc(cx + 1, LO_Y + 85, 0, b, hot ? WC_WHT : WC_GRN);   /* (too wide: the small face, SLOOP 2.7's REPEAT) */
+        else wf_textc(cx + 1, LO_Y + 84, 1, b, hot ? WC_WHT : WC_GRN);
         wf_clx0 = 0, wf_clx1 = 240;
     }
     if (wf_vis(4, FT_Y - 1, 232, 15)) {
@@ -4724,11 +4914,13 @@ static UI_NOINLINE const char *wl_name(uint32_t layer)
 static UI_NOINLINE void wf_big(int32_t x, int32_t y, int32_t z, const char *s, uint16_t col);
 static UI_NOINLINE int32_t wf_bigw(int32_t z, const char *s);
 static UI_NOINLINE void wf_punchwin(void);
+static UI_NOINLINE int wf_sheet_on(void);
+static UI_NOINLINE void wf_note_sheet(void), wf_drum_sheet(void);
 static UI_NOINLINE void wf_layerwin(void)
 {
     int32_t i;
     if (wf_pg == 2u && wl.layer == LY_FX) { wf_punchwin(); return; }   /* (SLOOP 2.6: its own window, the 27 effects) */
-    for (i = 0; i < 16 && !(wf_pg == 7u && !drum_page); i++) {        /* the keys: 4 x 4, left to right as on the keyboard */
+    for (i = 0; i < 16 && !(wf_pg == 7u && !drum_page) && !(wf_pg == 4u && wl.layer == 0xFDu); i++) {   /* the keys: 4 x 4, left to right as on the keyboard */
         const tile_t *t = &wl.tl[i];
         int32_t x = 5 + (i & 3) * 58, y = LO_Y + (i >> 2) * 20, empty = t->bg == C_BLACK, lit = t->bg != TE_G1 && !empty;
         uint16_t face, txt;
@@ -4753,14 +4945,17 @@ static UI_NOINLINE void wf_layerwin(void)
             wf_inset(x, LO_Y + 81, 56, 13, WC_LCD);
             wf_text(x + 3, LO_Y + 85, 0, wl.lab[i], WF_KNOB[i]);
             wf_clx0 = x + 1, wf_clx1 = x + 55;
-            wf_textr(x + 53, LO_Y + 84, 1, wl.val[i], WC_GRN);
+            if (wf_tw(1, wl.val[i]) > 50 - wf_tw(0, wl.lab[i])) wf_textr(x + 53, LO_Y + 85, 0, wl.val[i], WC_GRN);   /* (no room: the small face) */
+            else wf_textr(x + 53, LO_Y + 84, 1, wl.val[i], WC_GRN);
             wf_clx0 = 0, wf_clx1 = 240;
         }
     }
-    if (wf_vis(4, FT_Y - 1, 232, 15)) {
+    if (wf_vis(4, FT_Y - 1, 232, 15) && wf_sheet_on()) {               /* SLOOP 2.8: OCT+ held, the sheet in the foot */
+        if (wf_pg == 7u) wf_drum_sheet(); else wf_note_sheet();
+    } else if (wf_vis(4, FT_Y - 1, 232, 15)) {
         wf_inset(5, FT_Y, 230, 13, WC_LCD);
         wf_text(9, FT_Y + 3, 1, wl.sub, WC_GRN);
-        wf_textr(231, FT_Y + 3, 1, wf_pg == 4u || wf_pg == 7u ? "" : "LET GO: BACK", WC_LAB);
+        wf_textr(231, FT_Y + 3, 1, wf_pg == 4u && wl.layer == 0xFDu ? "PRESETS: ZOOM" : wf_pg == 4u || wf_pg == 7u ? "" : "LET GO: BACK", WC_LAB);
     }
 }
 
@@ -4854,6 +5049,9 @@ static UI_NOINLINE void wf_punchwin(void)
         wf_text(9, FT_Y + 3, 1, v, (thr_req & 1u) ? WC_AMB : WC_LOFF);
         str_cpy(v, "OCT+ ECHO THROW", sizeof v);
         wf_textr(231, FT_Y + 3, 1, v, (thr_req & 2u) ? WC_AMB : WC_LOFF);
+        str_cpy(v, "FADE ", sizeof v);                                 /* (SLOOP 2.8: SELECT sets the punch-in fade) */
+        fmt_int(v + 5, song.g[G_FXFADE]);
+        wf_textc(117, FT_Y + 4, 0, v, WC_GRN);
     }
 }
 
@@ -4898,12 +5096,166 @@ static UI_NOINLINE void wf_songwin(void)
     }
 }
 
-/* ---------------------------------------------------------------- lower window: STEP (the selected step of the pattern), as 16 buttons */
+/* ---------------------------------------------------------------- SLOOP 2.8: the sheet (OCT+ held on NOTES and the DRUM GRID), in the foot
+ * The row KNOB 1 picks lit in the middle with its value, the rows before and after it faint, six dots for the place (ui.c sheet_bar, as a
+ * Winamp display). OCT+ acts, OCT- closes. */
+static UI_NOINLINE uint32_t wf_mix(uint32_t h, uint32_t v);
+static int on_notes_page(void);                                        /* (ui_input.c) */
+static UI_NOINLINE int wf_sheet_on(void) { return ui.sheet && (on_notes_page() || (on_drum_page() && !drum_page)); }
+static UI_NOINLINE void wf_sheetbar(const char *const *lab, const char *const *val, uint32_t sel)
+{
+    uint32_t prev = (sel + 5u) % 6u, next = (sel + 1u) % 6u, i;
+    int32_t x = 9, lw = wf_tw(1, lab[sel]), vw = val[sel] && val[sel][0] ? wf_tw(1, val[sel]) + 5 : 0;
+    wf_inset(5, FT_Y, 230, 13, WC_LCD);
+    x = wf_text(x, FT_Y + 4, 0, lab[prev], WC_LOFF) + 6;
+    WFR(x - 2, FT_Y + 1, lw + vw + 4, 11, WC_SEL);
+    wf_text(x, FT_Y + 3, 1, lab[sel], WC_WHT);
+    if (vw) wf_text(x + lw + 5, FT_Y + 3, 1, val[sel], WC_GRN);
+    x += lw + vw + 8;
+    if (x < 190) { wf_clx1 = 194; wf_text(x, FT_Y + 4, 0, lab[next], WC_LOFF); wf_clx1 = 240; }
+    for (i = 0; i < 6u; i++) WFR(198 + (int32_t)i * 6, FT_Y + 5, 4, 4, i == sel ? WC_GRN : WC_GDIM);
+}
+static UI_NOINLINE void wf_note_sheet(void)                            /* NOTES: SLIDE NUDGE FILL MOVE COPY DELETE of the note under edit */
+{
+    const track_t *t = TSEL;
+    const step_t *cs = &t->step[ui.cursor];
+    char nu[8];
+    const char *val[6] = {cs->flags & SF_SLIDE ? "ON" : "OFF", nu, FILL_N[step_fill(t, ui.cursor) % 3u], "", "", ""};
+    fmt_int(nu, t->micro[ui.cursor]);
+    if (t->micro[ui.cursor] > 0) { nu[0] = '+'; fmt_int(nu + 1, t->micro[ui.cursor]); }
+    wf_sheetbar(SHEET_N, val, ui.sheet - 1u);
+}
+static UI_NOINLINE void wf_drum_sheet(void)                            /* DRUM GRID: RATCHET NUDGE FILL MOVE COPY DELETE of the hit */
+{
+    const dstep_t *ds = &TDRUM->dstep[drum_cursor];
+    char r[4], nu[8];
+    const char *val[6] = {r, nu, FILL_N[step_fill(TDRUM, drum_cursor) % 3u], "", "", ""};
+    int8_t m = TDRUM->micro[drum_cursor];
+    str_cpy(r, dstep_has(ds, drum_lane) ? "X1" : "--", 4);
+    if (dstep_has(ds, drum_lane)) r[1] = (char)('1' + dstep_rat(ds, drum_lane));
+    fmt_int(nu, m);
+    if (m > 0) { nu[0] = '+'; fmt_int(nu + 1, m); }
+    wf_sheetbar(DSHEET_N, val, ui.sheet - 1u);
+}
+
+/* ---------------------------------------------------------------- lower window: NOTES (SLOOP 2.8), the synth track's pattern as a piano roll
+ * On a Winamp display, as the DRUM GRID: each note a green bar as long as its step and TIEs, its FORCE as its shade (GHOST dark, SOFT hollow,
+ * NORM green, HARD bright, ACC a white cap), a SLIDE's tail; the note under edit in a red frame with its name; the C rows named, the beats
+ * ruled, the playhead in amber. KNOB 1 the note, 2 its pitch, 3 its length, 4 its force; PRESETS the zoom; OCT+ held its sheet. */
+static UI_NOINLINE uint32_t wf_roll_key(void)                          /* what the roll shows (repainted on a change) */
+{
+    const track_t *t = TSEL;
+    uint32_t k = ui.cursor | (uint32_t)ui.note_k << 8 | (uint32_t)ui.zoom << 16 | (uint32_t)ui.sheet << 20 | (uint32_t)song.sel << 24, i, q;
+    k = wf_mix(k, song.playing ? t->seq_idx + 1u : 0u);
+    k = wf_mix(k, (uint32_t)t->micro[ui.cursor] + 7u * step_fill(t, ui.cursor) + 131u * (uint32_t)last_note);
+    for (i = 0; i < trk_len(t) && i < NSTEP; i++) { const uint8_t *sb = (const uint8_t *)&t->step[i]; for (q = 0; q < sizeof(step_t); q++) k = k * 31u + sb[q]; }
+    return k;
+}
+static UI_NOINLINE void wf_noteroll(void)
+{
+    const track_t *t = TSEL;
+    const step_t *cs = &t->step[ui.cursor];
+    uint32_t len = trk_len(t), nv = NV_ZOOM[clamp(1 + (int8_t)ui.zoom, 0, 3)], v0, i, j;
+    int32_t lo = 127, hi = 0, x0 = 22, w = 230 - 17 - 2, top = LO_Y + 10, bot = LO_Y + 74, rh, sel_note = last_note;
+    char b[12];
+    if (!wf_vis(4, LO_Y - 1, 232, 79)) return;
+    wf_inset(5, LO_Y, 230, 76, WC_LCD);
+    if (nv > len) nv = len;
+    v0 = ui.cursor / nv * nv;
+    for (i = 0; i < len; i++)
+        for (j = 0; j < t->step[i].n; j++) {
+            if (t->step[i].note[j] < lo) lo = t->step[i].note[j];
+            if (t->step[i].note[j] > hi) hi = t->step[i].note[j];
+        }
+    if (step_on(cs)) sel_note = cs->note[ui.note_k % cs->n];
+    if (lo > hi) lo = hi = sel_note;
+    if (hi - lo < 11) { lo = clamp((lo + hi) / 2 - 6, 0, 115); hi = lo + 11; }   /* (an octave at least) */
+    if (hi - lo > 15) { lo = clamp(sel_note - 7, lo, hi - 15); hi = lo + 15; }   /* (a wide pattern: 16 rows around the note under edit) */
+    lo = clamp(lo - 1, 0, 127), hi = clamp(hi + 1, 0, 127);
+    rh = (bot - top) / (hi - lo + 1);
+    if (rh < 2) rh = 2;
+    fmt_int(b, (int32_t)v0 + 1);
+    str_cpy(b + str_len(b), "-", 2);
+    fmt_int(b + str_len(b), (int32_t)(v0 + nv > len ? len : v0 + nv));
+    wf_text(8, LO_Y + 2, 0, b, WC_LAB);
+    str_cpy(b, "ZOOM ", 12);
+    fmt_int(b + 5, (int32_t)nv);
+    wf_textr(231, LO_Y + 2, 0, b, WC_LOFF);
+    for (i = (uint32_t)lo; i <= (uint32_t)hi; i++) {                    /* the rows: the black keys darker, the C's ruled and named */
+        int32_t y = bot - ((int32_t)i - lo + 1) * rh;
+        uint32_t pc = i % 12u;
+        WFR(x0, y, w, rh, (0x54Au >> pc) & 1u ? RGB(0x0a, 0x0a, 0x12) : RGB(0x14, 0x14, 0x20));
+        if (!pc) {
+            note_name(b, i);
+            wf_text(7, y + rh / 2 - 3, 0, b, WC_LOFF);
+            WFR(x0, y + rh - 1, w, 1, RGB(0x30, 0x30, 0x48));
+        }
+    }
+    for (i = 0; i <= nv; i++)                                          /* the beats */
+        if (i % 4u == 0u) WFR(x0 + (int32_t)i * w / (int32_t)nv, top, 1, bot - top, i % 16u ? RGB(0x26, 0x26, 0x3a) : RGB(0x44, 0x44, 0x66));
+    for (i = 0; i < len; i++) {                                        /* the notes (one starting before the view: its part in it) */
+        const step_t *st = &t->step[i];
+        uint32_t n = note_len(t, i), f;
+        int32_t xa, xb, y;
+        if (!step_on(st) || i + n <= v0 || i >= v0 + nv) continue;
+        xa = x0 + ((int32_t)i - (int32_t)v0) * w / (int32_t)nv + 1;
+        xb = x0 + ((int32_t)(i + n) - (int32_t)v0) * w / (int32_t)nv - 1;
+        xa = xa < x0 ? x0 : xa;
+        xb = xb > x0 + w ? x0 + w : xb;
+        for (j = 0; j < st->n; j++) {
+            if (st->note[j] < lo || st->note[j] > hi) continue;
+            y = bot - ((int32_t)st->note[j] - lo + 1) * rh + 1;
+            f = note_force(st, j);
+            WFR(xa, y, xb - xa, rh - 1, f == 0u ? RGB(0x0c, 0x50, 0x0c) : f >= 3u ? RGB(0x8c, 0xff, 0x8c) : WC_GRN);
+            if (f == 1u && rh > 4) WFR(xa + 1, y + 1, xb - xa - 2, rh - 3, WC_LCD);   /* SOFT: hollow */
+            if (f == 4u) WFR(xa, y, xb - xa, 1, WC_WHT);                               /* ACC: a white cap */
+            if ((st->flags & SF_SLIDE) && j == 0u) WFR(xb, y + rh / 2 - 1, 3, 2, WC_GRN);
+            if (i == ui.cursor && j == ui.note_k % st->n) {                           /* the note under edit */
+                wf_bevel(xa - 2, y - 2, xb - xa + 4, rh + 3, WC_RED, WC_RED);
+                note_name(b, st->note[j]);
+                wf_text(xa, y - 9 < top ? y + rh + 2 : y - 9, 0, b, WC_WHT);
+            }
+        }
+    }
+    if (!step_on(cs) && sel_note >= lo && sel_note <= hi) {            /* an empty step: a frame where a note would go */
+        int32_t y = bot - (sel_note - lo + 1) * rh + 1, cx = x0 + ((int32_t)ui.cursor - (int32_t)v0) * w / (int32_t)nv, xw = w / (int32_t)nv - 2;
+        wf_bevel(cx + 1, y - 1, xw < 3 ? 3 : xw, rh + 1, WC_RED, WC_RED);
+    }
+    if (song.playing && t->seq_idx >= v0 && t->seq_idx < v0 + nv) {   /* the playhead */
+        int32_t x = x0 + ((int32_t)t->seq_idx - (int32_t)v0) * w / (int32_t)nv;
+        WFR(x, top, 1, bot - top, WC_AMB);
+    }
+}
+static UI_NOINLINE void wf_notes_fill(void)                            /* the knob row: NOTE PITCH LEN FORCE of the note under edit (as SLOOP's columns) */
+{
+    const step_t *st = &TSEL->step[ui.cursor];
+    int on = step_on(st);
+    uint32_t k = on ? ui.note_k % st->n : 0u;
+    memset(wl.tl, 0, sizeof wl.tl);
+    str_cpy(wl.lab[0], "NOTE", 8), str_cpy(wl.lab[1], "PITCH", 8), str_cpy(wl.lab[2], "LEN", 8), str_cpy(wl.lab[3], "FORCE", 8);
+    fmt_int(wl.val[0], (int32_t)ui.cursor + 1);
+    str_cpy(wl.val[0] + str_len(wl.val[0]), "/", 10 - str_len(wl.val[0]));
+    fmt_int(wl.val[0] + str_len(wl.val[0]), TSEL->p[P_SLEN]);
+    if (on) {
+        note_name(wl.val[1], st->note[k]);
+        if (st->n > 1u) { str_cpy(wl.val[1] + str_len(wl.val[1]), " ", 10 - str_len(wl.val[1])); fmt_int(wl.val[1] + str_len(wl.val[1]), (int32_t)k + 1); }
+        fmt_int(wl.val[2], (int32_t)note_span(TSEL, ui.cursor));
+        str_cpy(wl.val[3], FORCE_N[note_force(st, k)], 10);
+    } else {
+        str_cpy(wl.val[1], "--", 10), str_cpy(wl.val[2], "--", 10), str_cpy(wl.val[3], "--", 10);
+    }
+    str_cpy(wl.sub, "HOLD OCT+: SHEET", sizeof wl.sub);
+    wl.layer = 0xFD;
+}
+
+/* ---------------------------------------------------------------- lower window: STEP (the selected step of the pattern), as 16 buttons
+ * (SLOOP 2.8: the synth tracks have NOTES above; this stays for the drum track, which SLOOP keeps off this page) */
 static UI_NOINLINE void wf_step_tiles(void)
 {
     const track_t *t = TSEL;
     uint32_t len = trk_len(t), page = ui.cursor / 16u, i;
     static const char *const TM[3] = {"NOTE", "TIE", "REST"};
+    if (!is_drum(t)) { wf_notes_fill(); return; }
     memset(wl.tl, 0, sizeof wl.tl);
     for (i = 0; i < 16u; i++) {
         uint32_t idx = page * 16u + i;
@@ -4966,6 +5318,20 @@ static UI_NOINLINE void wf_drum_fill(void)                             /* the kn
         fmt_int(wl.val[1], drum_cursor + 1);
         str_cpy(wl.val[2], dstep_has(st, drum_lane) ? "ON" : "-", 10);
         str_cpy(wl.val[3], dstep_has(st, drum_lane) ? LV_NAME[dstep_lvl(st, drum_lane)] : "-", 10);
+    } else if (drum_page == 2u) {                                      /* SOUND (SLOOP 2.7): a sound's TUNE and DECAY; a key picks the sound */
+        str_cpy(wl.lab[0], "SOUND", 8), str_cpy(wl.lab[1], "TUNE", 8), str_cpy(wl.lab[2], "DECAY", 8), str_cpy(wl.lab[3], "LEVEL", 8);
+        str_cpy(wl.val[0], lane_label(drum_lane), 10);
+        fmt_int(wl.val[1], drum_tune[drum_lane]);
+        if (drum_tune[drum_lane] > 0) { wl.val[1][0] = '+'; fmt_int(wl.val[1] + 1, drum_tune[drum_lane]); }
+        fmt_int(wl.val[2], drum_dec[drum_lane]);
+        if (drum_dec[drum_lane] > 0) { wl.val[2][0] = '+'; fmt_int(wl.val[2] + 1, drum_dec[drum_lane]); }
+        fmt_int(wl.val[3], song.g[G_DRLVL] * 100 / 127);
+        for (i = 0; i < DRUM_LANES; i++) {
+            str_cpy(wl.tl[i].lab, lane_label(i), 8);
+            wl.tl[i].bg = pad_lit[i] ? C_WHITE : TE_G1;
+            wl.tl[i].fg = i == drum_lane ? C_WHITE : TE_G3;
+            wl.tl[i].top = i == drum_lane ? WC_AMB : drum_tune[i] || drum_dec[i] ? WC_GRN : 0;   /* (a sound tuned or shortened: a green band) */
+        }
     } else {
         str_cpy(wl.lab[0], "KIT", 8), str_cpy(wl.lab[1], "LEVEL", 8), str_cpy(wl.lab[2], "REVERB", 8), str_cpy(wl.lab[3], "PAN", 8);
         fmt_int(wl.val[0], (int32_t)kit + 1);
@@ -5121,6 +5487,7 @@ static UI_NOINLINE void wf_recorder(void)
         str_cpy(b, "PASS ", 24), fmt_int(b + 5, (int32_t)t->pass), wf_text(78, LO_Y + 12, 0, b, d);
         str_cpy(b, "TRACK ", 24), b[6] = (char)(song.sel < 3u ? '1' + song.sel : 'D'), b[7] = 0, wf_textr(220, LO_Y + 3, 0, b, c);
         fmt_int(b, song.g[G_BPM]), str_cpy(b + str_len(b), " BPM", 24 - str_len(b)), wf_textr(220, LO_Y + 10, 0, b, d);
+        wf_textr(220, LO_Y + 17, 0, rec_quant_off ? "K4 QUANT OFF" : "K4 QUANT ON", ui.hot_t && ui.hot_col == 3u ? WC_WHT : d);   /* (SLOOP 2.7: KNOB 4) */
         if (run || (rec_wait && (fm1_ms / 400u) & 1u)) WFR(225, LO_Y + 3, 6, 6, WC_RED);
         /* the reels, the tape, the head */
         wf_reel2(lx, ly, rl, a, c, d);
@@ -5183,10 +5550,14 @@ static UI_NOINLINE void wf_paint(int32_t x, int32_t y, int32_t w, int32_t h)
             wf_window(WL_Y, WL_H, "WINAMPFM DRUM GRID");
             wf_drumgrid();
             wf_layerwin();                                             /* (its knob row and foot; no keys: the grid is drawn above) */
+        } else if (wf_vis(0, WL_Y, 240, WL_H) && wf_pg == 4u && wl.layer == 0xFDu) {   /* SLOOP 2.8: NOTES */
+            wf_window(WL_Y, WL_H, "WINAMPFM NOTES");
+            wf_noteroll();
+            wf_layerwin();                                             /* (its knob row and foot; no keys: the roll is drawn above) */
         } else if (wf_vis(0, WL_Y, 240, WL_H) && (wf_pg == 2u || wf_pg == 4u || wf_pg == 7u)) {
             char t[24];
             str_cpy(t, "WINAMPFM ", 24);
-            str_cpy(t + 9, wf_pg == 4u ? "STEP" : wf_pg == 7u ? "DRUM KIT" : wl_name(wl.layer), 15);
+            str_cpy(t + 9, wf_pg == 4u ? "STEP" : wf_pg == 7u ? (drum_page == 2u ? "DRUM SOUND" : "DRUM KIT") : wl_name(wl.layer), 15);
             wf_window(WL_Y, WL_H, t);
             wf_layerwin();
         } else if (wf_vis(0, WL_Y, 240, WL_H) && wf_pg) {
@@ -5251,6 +5622,8 @@ static UI_NOINLINE void wfm_draw_(void)
     if (song.playing && !wf_was_play) wf_t0 = now;
     if (!wf_pg && wf_view == 4u && !wf_recmode()) {                    /* the visualizer on the whole screen */
         int step = now - wf_t_vz >= 50u;                               /* 20 fps */
+        if (ui.force || ui.frame != wvf_fr + 1u) for (i = 0; i < 240u / WVF_SL; i++) wvf_sum[i] = 0;   /* (another screen came between) */
+        wvf_fr = ui.frame;
         if (now - wf_t_lcd >= 40u) { wf_t_lcd = now; wf_spectrum(); }  /* (the spectrum goes on: the player is not drawn) */
         if (step) { wf_t_vz = now; wvf_step(); }
         if (step || ui.force) wvf_paint();
@@ -5281,7 +5654,8 @@ static UI_NOINLINE void wfm_draw_(void)
         wf_k_lcd = wf_k_mq = wf_k_info = wf_k_pos = wf_k_trk = wf_k_lo = wf_k_crv = 0;
     }
     /* each part: a key of what it shows; repainted when the key changes */
-    k = wf_mix(wf_secs(), song.playing | (rec_wait << 1) | ((uint32_t)wf_recording() << 2) | (((now / 400u) & 1u) << 3));
+    wf_chord_step();
+    k = wf_mix(wf_secs() ^ wf_chd << 12, song.playing | (rec_wait << 1) | ((uint32_t)wf_recording() << 2) | (((now / 400u) & 1u) << 3));
     for (i = 0; i < 19u; i++) k = wf_mix(k, wf_spec[i] | (uint32_t)wf_peak[i] << 5);
     if (k != wf_k_lcd) { wf_k_lcd = k; if (!full) wf_paint(LCD_X - 1, LCD_Y - 1, LCD_W + 2, LCD_H + 2); }
     k = wf_mix(str_hash(2166136261u, wf_mq), wf_mq_off ^ ((uint32_t)(wf_recording() || rec_wait || ci_on) << 20));
@@ -5335,6 +5709,8 @@ static UI_NOINLINE void wfm_draw_(void)
     } else if (wf_pg == 7u) {
         uint32_t len = (uint32_t)clamp(TDRUM->p[P_SLEN], 1, 64);
         k = wf_mix(drum_page + drum_lane * 7u + drum_cursor * 101u + len * 3u, song.playing ? TDRUM->seq_idx + 1u : 0u);
+        k = wf_mix(k, (uint32_t)ui.sheet | (uint32_t)(uint8_t)TDRUM->micro[drum_cursor] << 8 | step_fill(TDRUM, drum_cursor) << 16);
+        for (i = 0; i < DRUM_LANES; i++) k = wf_mix(k, (uint32_t)(uint8_t)drum_tune[i] | (uint32_t)(uint8_t)drum_dec[i] << 8);
         for (i = 0; i < DRUM_LANES; i++) k = wf_mix(k, pad_lit[i] ? 1u : 0u);
         for (i = 0; i < len; i++) { const dstep_t *d = &TDRUM->dstep[i]; k = wf_mix(k, dstep_mask(d) + d->lvl[0] + d->lvl[1] * 7u + d->lvl[2] * 49u + d->lvl[3] * 343u); }
         for (i = 0; i < 4u; i++) k = str_hash(k, wl.val[i]);
@@ -5343,15 +5719,17 @@ static UI_NOINLINE void wfm_draw_(void)
         k = wf_mix(str_hash(wl.layer, wl.sub), 0);
         for (i = 0; i < 16u; i++) k = wf_mix(wf_mix(str_hash(k, wl.tl[i].lab), wl.tl[i].bg | (uint32_t)wl.tl[i].top << 16), wl.tl[i].fg ^ (uint32_t)wl.tl[i].marks << 20);
         for (i = 0; i < 4u; i++) k = str_hash(str_hash(k, wl.lab[i]), wl.val[i]);
-        if (wf_pg == 2u && wl.layer == LY_FX) { wpx_tick(); k = wf_mix(wf_mix(k, (uint32_t)(punch.req + 1) | thr_req << 8), wpx_moving() ? now / 20u : (uint32_t)wpx_to); }   /* (the carousel slides) */
+        if (wf_pg == 4u && wl.layer == 0xFDu) k = wf_mix(k, wf_roll_key());   /* (NOTES: the roll) */
+        if (wf_pg == 2u && wl.layer == LY_FX) { wpx_tick(); k = wf_mix(wf_mix(k, (uint32_t)(punch.req + 1) | thr_req << 8 | (uint32_t)song.g[G_FXFADE] << 12), wpx_moving() ? now / 20u : (uint32_t)wpx_to); }   /* (the carousel slides) */
         if (k != wf_k_lo) { wf_k_lo = k; if (!full) wf_paint(4, LO_Y - 1, 232, 240 - LO_Y - 1); }
     } else if (wf_pg) {
         k = wf_mix(ui.page, ui.hot_t ? 1u + ui.hot_col : 0u);
         for (i = 0; i < 4u; i++) { const param_desc_t *d = page_desc(cur_page(), i, &vp); k = wf_mix(k, d && vp ? (uint32_t)*vp : 0xFFFFu); }
         k = wf_mix(k, song.sel);
+        if (wf_pg == 1u && cur_page()->graph == GR_WAVE) k = wf_mix(k, wf_wave_key());
         if (k != wf_k_lo) { wf_k_lo = k; wf_k_crv = 0; if (!full) wf_paint(4, LO_Y - 1, 232, 240 - LO_Y - 1); }
         k = now / 70u;                                                     /* the line above the sliders is alive */
-        if (wf_pg == 1u && k != wf_k_crv) { wf_k_crv = k; if (!full) wf_paint(4, LO_Y + 15, 232, 16); }
+        if (wf_pg == 1u && !wf_hasfig(cur_page()) && k != wf_k_crv) { wf_k_crv = k; if (!full) wf_paint(4, LO_Y + 15, 232, 16); }
     } else if (wf_view == 2u) {
         if (now - wf_t_vz >= 50u) {                                    /* the visualizer: 20 fps */
             wf_t_vz = now;
@@ -5492,7 +5870,7 @@ static void wfm_splash(void)
         wf_textc(120, 160, 1, "SYNTH FOR THE FM-1", WC_LAB);
         wf_inset(14, 186, 212, 13, WC_LCD);
         wf_textc(120, 189, 1, "*** LOADING ***", WC_GRN);
-        wf_textc(120, 210, 0, "WINAMPFM 0.12  BASED ON SLOOP 2.6  GPL-3.0", WC_LOFF);
+        wf_textc(120, 210, 0, "WINAMPFM 0.12  BASED ON SLOOP 2.8.4  GPL-3.0", WC_LOFF);
         cv_ox = 0, cv_oy = 0;
         cv_blit(0, (uint32_t)y0);
     }
@@ -5503,7 +5881,15 @@ static void wfm_splash(void)
 static UI_NOINLINE void wfm_menu_draw(void)
 {
     static uint32_t sig_was = 0xFFFFFFFFu, frame_was;
-    uint32_t sig = ui.menu_sel * 131u + bl_lv * 3571u + TAPE_AUTO() * 7u + usb_serial * 13u + ml_count() * 17u + settings.lowcut * 7919u + usb_full * 49979687u + boot_mute * 104729u, band, i, n;
+    uint32_t sig = ui.menu_sel * 131u + bl_lv * 3571u + TAPE_AUTO() * 7u + usb_serial * 13u + ml_count() * 17u + settings.lowcut * 7919u + usb_full * 49979687u + boot_mute * 104729u +
+                   knob_accel_off * 19u + flt_reso * 23u + step_adv_off * 29u + drum_preview * 31u + usb_rate * 37u + cpu1_off * 41u, band, i, n, nv = 0, pos = 0, top;
+    for (i = 0; i < MI_COUNT; i++) {                                   /* (SLOOP 2.8: more rows than the window: it scrolls with the cursor) */
+        if ((WFM_MENU_HIDE >> i) & 1u) continue;
+        if (i == ui.menu_sel) pos = nv;
+        nv++;
+    }
+    top = pos < 5u || nv + 1u <= 11u ? 0u : pos + 6u > nv + 1u ? nv + 1u - 11u : pos - 5u;   /* (11 rows; the last one SKINS) */
+    sig += top * 43u;
     if (sig == sig_was && ui.frame == frame_was + 1u && !ui.force) { frame_was = ui.frame; return; }
     sig_was = sig, frame_was = ui.frame;
     for (band = 0; band < 2u; band++) {
@@ -5515,9 +5901,10 @@ static UI_NOINLINE void wfm_menu_draw(void)
         wf_inset(5, 15, 230, 168, WC_LCD);
         for (i = 0, n = 0; i < MI_COUNT; i++) {
             const char *val = "";
-            int32_t y = 17 + (int32_t)n * 15;
+            int32_t y = 17 + ((int32_t)n - (int32_t)top) * 15;
             int sel = i == ui.menu_sel;
             if ((WFM_MENU_HIDE >> i) & 1u) continue;
+            if (n < top || n >= top + 11u) { n++; continue; }
             if (i == MI_LOWCUT) val = settings.lowcut ? "ON" : "OFF";
             else if (i == MI_USB) val = usb_full ? "FULL" : "MASTER";
             else if (i == MI_BOOT) val = boot_mute ? "OFF" : "ON";
@@ -5525,14 +5912,24 @@ static UI_NOINLINE void wfm_menu_draw(void)
             else if (i == MI_SERIAL) val = usb_serial ? "ON" : "OFF";                                  /* (SLOOP 2.6) */
             else if (i == MI_LCLEAR) { static char lv[8]; uint32_t nc = ml_count(); if (nc) { fmt_int(lv, (int32_t)nc); str_cpy(lv + str_len(lv), " CC", 4); val = lv; } else val = "NONE"; }
             else if (i == MI_BRIGHT) { static char bv[6]; fmt_int(bv, (int32_t)BL_LV() * 10); str_cpy(bv + str_len(bv), "%", 6 - str_len(bv)); val = bv; }
+            else if (i == MI_ACCEL) val = knob_accel_off ? "OFF" : "ON";                              /* (SLOOP 2.7) */
+            else if (i == MI_FRESO) { static char rv[4]; if (flt_reso) fmt_int(rv, flt_reso > 10u ? 10 : flt_reso); else str_cpy(rv, "OFF", 4); val = rv; }   /* (2.8) */
+            else if (i == MI_ADV) val = step_adv_off ? "OFF" : "ON";                                  /* (2.7.1) */
+            else if (i == MI_DPREV) val = drum_preview ? "ON" : "OFF";                                /* (2.7.1) */
+            else if (i == MI_RATE) { static const char *const R[3] = {"AUTO", "44.1 KHZ", "48 KHZ"}; val = R[usb_rate % 3u]; }
+            else if (i == MI_CPU1) val = cpu1_off ? "OFF" : cpu1_on() ? "ON" : "ON (NEXT START)";      /* (2.7: the second core) */
             else val = ">";
             if (sel) WFR(6, y, 228, 14, WC_SEL);
             wf_text(12, y + 4, 1, MI_NAME[i], sel ? WC_WHT : WC_GRN2);
             wf_textr(228, y + 4, 1, val, sel ? WC_WHT : WC_GRN2);
             n++;
         }
-        wf_text(12, 17 + (int32_t)n * 15 + 4, 1, "SKINS", WC_LOFF);        /* next: HOLD HOME = the skins */
-        wf_textr(228, 17 + (int32_t)n * 15 + 4, 1, "SOON", WC_LOFF);
+        if (n >= top && n < top + 11u) {
+            wf_text(12, 17 + ((int32_t)n - (int32_t)top) * 15 + 4, 1, "SKINS", WC_LOFF);        /* next: HOLD HOME = the skins */
+            wf_textr(228, 17 + ((int32_t)n - (int32_t)top) * 15 + 4, 1, "SOON", WC_LOFF);
+        }
+        if (top) WFR(229, 17, 4, 4, WC_GRN);                           /* (more above / below) */
+        if (top + 11u < nv + 1u) WFR(229, 177, 4, 4, WC_GRN);
         wf_inset(5, 190, 230, 42, WC_LCD);
         wf_text(10, 194, 1, "PRESETS", WC_GRN), wf_text(62, 194, 1, "MOVE", WC_LAB);
         wf_text(124, 194, 1, "KNOB 1", WF_KNOB[0]), wf_text(166, 194, 1, "SET", WC_LAB);
@@ -5650,7 +6047,7 @@ static void wfb_about(void)
         }
         wf_foot2("PRESETS", "CREDITS", "OCT-", "BACK");
     } else {
-        static const char *const L[10] = {"WINAMPFM SYNTH FOR THE FM-1", "INTERFACE: HERICDK", "BASED ON SLOOP 2.6 (ISOD89)", "FELUCCA (KUROGEDELIC), FM1 QUEST",
+        static const char *const L[10] = {"WINAMPFM SYNTH FOR THE FM-1", "INTERFACE: HERICDK", "BASED ON SLOOP 2.8.4 (ISOD89)", "FELUCCA (KUROGEDELIC), FM1 QUEST",
                                           "R/MVAVEFM1 COMMUNITY", "SAMPLES: VERSILIAN, SONIC PI", "PHASE: CRISPYZEBRA (GPL)", "VOICE: KLATTSCH (MIT)",
                                           "LOOK INSPIRED BY WINAMP 2.X", "GPL-3.0, NO WARRANTY"};
         uint32_t i;

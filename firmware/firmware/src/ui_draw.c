@@ -19,7 +19,7 @@ static void wfm_led_draw(void), wfm_importer_draw(void), wfm_about_draw(void);
 static uint32_t str_hash(uint32_t h, const char *s);
 
 /* --------------------------------------------------------- drawing --- */
-static UI_NOINLINE int is_eng_name(const char *s)                 /* one of the ENGINES[]->name strings */
+UI_SMALL static int is_eng_name(const char *s)                 /* one of the ENGINES[]->name strings */
 {
     uint32_t e;
     for (e = 0; e < NENGINES; e++)
@@ -29,20 +29,20 @@ static UI_NOINLINE int is_eng_name(const char *s)                 /* one of the 
 }
 
 /* at most 5 characters, and no wider than maxw */
-static UI_NOINLINE void fit(char *d, const char *src, const felucca_font_t *f, int32_t maxw)
+UI_SMALL static void fit(char *d, const char *src, const felucca_font_t *f, int32_t maxw)
 {
     str_cpy(d, src, is_eng_name(src) ? 8 : 6);           /* engine names are kept whole */
     while (d[0] && text_w(f, d) > maxw)
         d[str_len(d) - 1u] = 0;
 }
 
-static UI_NOINLINE int32_t batt_level(void)                         /* ADC ch3 thresholds */
+UI_SMALL static int32_t batt_level(void)                         /* ADC ch3 thresholds */
 {
     return song.batt_raw >= 591 ? 3 : song.batt_raw >= 561 ? 2 : song.batt_raw >= 531 ? 1 : 0;
 }
 /* charging (a USB host powers us; there is no charger status line): bars fill 1, 2, 3
  * every 0.6 s, so the header is redrawn twice a second at most; else the level */
-static UI_NOINLINE int32_t batt_shown(void)
+UI_SMALL static int32_t batt_shown(void)
 {
     if (usb.config && !usb.suspended)
         return 1 + (int32_t)((fm1_ms / 600u) % 3u);
@@ -78,7 +78,7 @@ static UI_NOINLINE uint32_t steps_hash(const track_t *t)
     return h;
 }
 
-static UI_NOINLINE uint32_t str_hash(uint32_t h, const char *s)
+UI_SMALL static uint32_t str_hash(uint32_t h, const char *s)
 {
     while (*s)
         h = (h ^ (uint8_t)*s++) * 16777619u;
@@ -107,7 +107,7 @@ static struct {
     uint8_t meter[NTRK];
 } ts;
 
-static UI_NOINLINE int32_t meter_px(int32_t a)                   /* |sample| (Q15) -> px: 6 dB = TS_H / 10 */
+UI_SMALL static int32_t meter_px(int32_t a)                   /* |sample| (Q15) -> px: 6 dB = TS_H / 10 */
 {
     int32_t lg = 0, v;
     if (a < 64)
@@ -118,12 +118,12 @@ static UI_NOINLINE int32_t meter_px(int32_t a)                   /* |sample| (Q1
     return clamp((v - 48) * (TS_H - 2) / 80, 0, TS_H - 2);
 }
 
-static UI_NOINLINE uint32_t trk_level(uint32_t c)                /* LEVEL 0..127 (the drum track: GLO > DRUMS LEVEL) */
+UI_SMALL static uint32_t trk_level(uint32_t c)                /* LEVEL 0..127 (the drum track: GLO > DRUMS LEVEL) */
 {
     return (uint32_t)(c == TRK_DRUM ? song.g[G_DRLVL] : trk[c].p[P_LEVEL]) & 127u;
 }
 
-static UI_NOINLINE void trk_short_name(uint32_t c, char *b)      /* the track's sound, b holds 13 */
+UI_SMALL static void trk_short_name(uint32_t c, char *b)      /* the track's sound, b holds 13 */
 {
     const track_t *t = &trk[c];
     const engine_t *e = ENGINES[t->eng_req % NENGINES];
@@ -151,7 +151,7 @@ static UI_NOINLINE void trk_short_name(uint32_t c, char *b)      /* the track's 
 
 /* the UI's timers, once a frame whatever the screen (a message, the BPM highlight, an armed GO, the
  * white value of the knob just turned) */
-static UI_NOINLINE void ui_timers(void)
+UI_SMALL static void ui_timers(void)
 {
     if (ui.msg_t)
         ui.msg_t--;

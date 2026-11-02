@@ -96,6 +96,17 @@ enum {                          /* global parameters */
     G_TXRATE, G_TXWHEN, G_TXDUCK,           /* its source, level, tone, movement; its rate, when it plays, the DUCK pump.
                                              * In a project (project.c: the spare bytes) */
     G_BEND,                     /* SLOOP 2.6, GLO > MIDI 2: the pitch bend's range, 1..12 semitones (a setting of the FM-1) */
+    G_FXCH,                     /* SLOOP 2.7, GLO > MIDI 3: the punch-in FX's MIDI channel (0 OFF, 1..16; a setting of the
+                                 * FM-1): its notes F3..G5 hold the effects as FX + the FM-1's keys do (seq.c midi_fx) */
+    G_DRMAP,                    /* SLOOP 2.7, GLO > MIDI 3: how MIDI notes pick the drum sounds: 0 GM (the General MIDI notes, as
+                                 * before), 1 1-16 (any 16 notes in a row: the 16 sounds in order, again each 16; seq.c
+                                 * midi_drum_lane; a setting of the FM-1) */
+    G_RMCH,                     /* SLOOP 2.7, GLO > MIDI 3: REMOTE, the channel whose CCs 102..115 press the 14 buttons (0 OFF,
+                                 * 1..16; seq.c remote_cc, ui_input.c remote_poll; a setting of the FM-1) */
+    G_CLKOUT,                   /* SLOOP 2.7, GLO > MIDI 3: CLK OUT, the MIDI clock (24 a beat) and START / STOP out on USB
+                                 * while SYNC is INT (seq.c clkout_block; a setting of the FM-1, kept in DR MAP's byte) */
+    G_FXFADE,                   /* SLOOP 2.7.2, the FX layer (FX held), SELECT: how fast a punch-in FX fades in and out, 0 (instant, as
+                                 * before) .. 15 (punch.c; a setting of the FM-1, kept in BEND's byte) */
     G_COUNT
 };
 
@@ -105,7 +116,9 @@ typedef struct {
     uint8_t stage;               /* env: 0 off, 1 attack, 2 decay/sustain, 3 release, 4 fading out (given up) */
     uint8_t kill;                /* stage 4: blocks of the fade left */
     uint8_t pitch_frac;          /* the glide between 1/16 semitones: pitch_cur + pitch_frac / 256 */
+    uint8_t pend;                /* (2.8.3) VP_*: a sample's note waiting for its voice's fade (voice.c voice_start) */
     int16_t penv;                /* the pitch envelope (ENV > PIT): Q15, a fast fall from the note's start */
+    uint8_t pend_note, pend_vel; /* (2.8.3) that note (in the padding: voice_t keeps its size) */
     int32_t env;                 /* Q24 */
     int32_t env_out;             /* last control-rate amplitude, Q15 */
     int32_t pitch16, pitch_cur;  /* 1/16 semitone, with glide */
@@ -177,6 +190,17 @@ typedef struct {
 enum { ST_NOTE, ST_TIE, ST_REST };
 #define SF_ACCENT 1u
 #define SF_SLIDE 2u
+/* SLOOP 2.7: bits 3..6 of a NOTE step's flags: note k goes on from the step before (not triggered, not released),
+ * so notes held in the pattern carry on under a note recorded over them (seq.c rec_note, seq_step_cont). An older
+ * SLOOP ignores them (the notes play again there). Bit 2 stays free (the user presets' patterns use 4 for a tie). */
+#define SF_CONT0 8u
+#define SF_CONT(k) (SF_CONT0 << (k))
+#define SF_CONT_ALL (15u * SF_CONT0)
+/* SLOOP 2.7.2: bit 7 of a NOTE step's flags (MONO / LEGATO / UNISON parts): played legato, recorded while the note
+ * before was still held: the note before is held to it and this one takes over as a held key does (LEGATO: the
+ * envelope goes on; a glide only with GLIDE or a SLIDE), not released and played again (seq.c rec_note, seq_step).
+ * An older SLOOP ignores it (the note plays again there) */
+#define SF_LEG 0x80u
 /* the dynamics of a note or a drum hit (2 bits each in the steps): played without velocity
  * (OCT- / OCT+ held on the drum track, the step page) or from a MIDI velocity */
 enum { LV_NORM, LV_GHOST, LV_SOFT, LV_HARD };
@@ -231,6 +255,9 @@ typedef struct track {
     uint32_t arp_idx;
     uint8_t arp_note;            /* sounding arp note, 0 = none */
     uint8_t arp_new;             /* a chord just started: its first note now */
+    uint8_t arp_ch[3];           /* (2.7) MODE CHORD: the other notes sounding with arp_note, 0 = none */
+    uint8_t arp_walk;            /* (2.7) MODE WALK: the place in the note list it stands on */
+    uint8_t arp_odd;             /* (2.7) stopped: the next arp step is an odd one (its SWG: late) */
     uint32_t arp_off;            /* units to its note-off */
     /* sequencer: synth parts step[], the drum track dstep[] (16 lanes) */
     union {
@@ -269,6 +296,10 @@ typedef struct track {
     uint8_t rh_last;             /* the last of them; rh_bak: what it held (an early release puts it back) */
     uint32_t rh_last_abs;        /* (its step of the transport grid) */
     step_t rh_bak;
+    step_t rh_put;               /* (2.8.3) what the hold wrote into rh_last (an early release puts rh_bak back only over it) */
+    uint8_t rh_end;              /* (2.7.1) one of them let go, others still held: the next step, only those go on */
+    uint8_t rh_rs;               /* (2.7.1) rh_start is such a step (rh_last, rh_last_abs: it) */
+    uint8_t rh_offn, rh_off[4];  /* (2.7.1) the ones let go since the hold's last NOTE step (they end there) */
     uint32_t pass;               /* loops played since PLAY (a recording pass: one undo) */
     /* mono */
     uint8_t mono_stack[8];
@@ -276,7 +307,9 @@ typedef struct track {
     uint8_t mono_note;           /* note the MONO / LEGATO / UNISON voice(s) play, 0 = none */
     uint8_t rr;                  /* POLY ROTATE: next voice to try */
     /* mix runtime */
-    int32_t lvl;                 /* the LEVEL gain (Q12) of the last block: a change is ramped (fx.c) */
+    int32_t lvl;                 /* the LEVEL gain (Q12) of the last block: a change glides (fx.c mix_glide) */
+    int32_t gpl, gpr;            /* (2.7) the PAN gains (Q12) of the last block: a change glides too */
+    uint8_t mix_on;              /* (2.7) lvl / gpl / gpr hold a block's values (0: the first block starts at its own) */
     int32_t peak;
     int32_t dist_hp, dist_lp1, dist_lp2;   /* DIST insert state (fx.c) */
     int32_t att;                 /* mute / solo fade: attenuation, Q15 (0 = heard; fx.c mix_part, drums_mix) */
@@ -347,6 +380,19 @@ static uint32_t dly_samples(uint32_t d) { return dly_units(d) / (uint32_t)song.g
  * up to 70 % if it is lower. The song's values never change, nothing is saved or recorded. thr_req: bit 0 the reverb,
  * bit 1 the echo (the UI); thr_rev, thr_dly: the glide now, Q15 (fx.c mix_block, a block at a time) */
 static volatile uint8_t thr_req;
+/* (2.7.1) MIDI CC 11, EXPRESSION, per track: 127 - its value (0, the default: full). A gain over the track's LEVEL (the
+ * drums': GLO > DRUMS LVL), 40 log10(v / 127) dB as GM's: the mix is not touched. CC 121 and a project loaded reset it */
+static volatile uint8_t ex_off[NTRK];
+static inline int32_t expr_gain(int32_t lvl, uint32_t k)
+{
+    uint32_t e = 127u - ex_off[k % NTRK];
+    return e >= 127u ? lvl : (int32_t)(((uint32_t)lvl * ((e * e * 16384u + 8064u) / 16129u)) >> 14);
+}
+static volatile uint8_t thr_ed;          /* (2.7) the editor's LIVE page: its own THROWs (editor_live.c), with thr_req's */
+/* (2.7) the editor's LIVE page: the master level from there (0: the MASTER knob; 1..127: its level + 1). The knob takes
+ * it back when it is turned (main.c); ed_master_k: the knob's reading when the page set it (0xFFFF: not read yet) */
+static volatile uint8_t ed_master;
+static volatile uint16_t ed_master_k = 0xFFFFu;
 static int32_t thr_rev, thr_dly;
 static inline int32_t send_thr(int32_t s, int32_t g) { return g ? s + (((127 * 258 - s) * g) >> 15) : s; }   /* s 0..32766 */
 #define TSEL (&trk[song.sel])    /* the selected track */

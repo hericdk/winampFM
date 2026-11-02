@@ -30,6 +30,7 @@ class SloopProcessor extends AudioWorkletProcessor {
             else if (m.t === 'adc') this.e.emu_adc_set(m.ch, m.v);
             else if (m.t === 'midi') this.e.emu_midi(m.p);
             else if (m.t === 'stop') this.running = false;
+            else if (m.t === 'touch') this.port.postMessage({ t: 'touched', id: m.id, a: this.e.emu_touch ? this.e.emu_touch(m.x, m.y, m.kind, m.d) >>> 0 : 0 });   // (the flat screen: what is under the click)
         };
         this.postFrame();           // the splash, before audio starts
     }

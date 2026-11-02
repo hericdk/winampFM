@@ -9,6 +9,7 @@ static const char *const N_LSYNC[] = {"OFF", "4BAR", "2BAR", "1BAR", "1/2", "1/4
 static const char *const N_LTRIG[] = {"NOTE", "FREE"};
 static const char *const N_LPOL[] = {"BI", "UNI"};
 /* GLO > MIDI (2.6): a synth track's MIDI channel, and the other channels */
+static const char *const N_SECT[] = {"A", "B", "C", "D", 0};   /* SAVE > SECTION (2.7): the slot as its section */
 static const char *const N_MCH[] = {"OFF", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"};
 static const char *const N_MOTH[] = {"SEL", "OFF"};
 /* GLO > TEXTURE (2.6, fx.c texture_*): the bed's sources (the user slots last), its movement's length, when it plays */
@@ -34,7 +35,8 @@ static const char *const N_IBITS[] = {"1", "2", "3", "4", "5", "6", "7", "8", "9
                                       "16", 0};
 static const char *const N_IRATE[] = {"689", "919", "1.1k", "1.4k", "1.8k", "2.2k", "2.8k", "3.7k", "4.4k", "5.5k",
                                       "7.4k", "8.8k", "11k", "15k", "22k", "44k", 0};
-static const char *const N_AMODE[] = {"OFF", "UP", "DN", "UPDN", "RND", "ORD"};
+static const char *const N_AMODE[] = {"OFF", "UP", "DN", "UPDN", "RND", "ORD",   /* (append-only: seq.c AM_*) */
+                                       "REPEAT", "DNUP", "UP+8", "CONV", "DIVG", "PINKY", "THUMB", "WALK", "CHORD"};
 static const char *const N_MOUT[] = {"KEYS", "SEQ"};
 static const char *const N_MIN[] = {"NOTES", "CLOCK", "CH 1", "CH 2", "CH 3", "CH 4", "CH 5", "CH 6", "CH 7", "CH 8", "CH 9",
                                      "CH 10", "CH 11", "CH 12", "CH 13", "CH 14", "CH 15", "CH 16"};  /* G_ROUTE: MIDI in, notes and clock, the clock only, or (2.6) one channel only, on the selected track (seq.c) */    /* G_MIDI: what goes to MIDI OUT (seq.c seq_out_on) */
@@ -45,12 +47,14 @@ static const char *const N_DLY[] = {"1/4", "1/8", "1/16", "1/32", "8T", "16T", "
 static const char *const N_SCALE[] = {"CHR", "MAJ", "MIN", "DOR", "MIX", "PEN", "MPEN", "HARM",
                                     "PHRY", "LYD", "LOC", "MEL", "BLUES", "WHOLE", "DIMHW", "DIMWH"};
 static const char *const N_ONOFF[] = {"OFF", "ON"};
+static const char *const N_CLKOUT[] = {"OFF", "OUT"};   /* 2.7, GLO > MIDI 3 > CLOCK: OUT, the MIDI clock out */
+static const char *const N_DRMAP[] = {"GM", "1-16"};   /* (2.7) GLO > MIDI 3: DR MAP */
 static const char *const N_QUANT[] = {"OFF", "SNAP", "WHITE"};   /* seq.c kb_map; 1 = SNAP as the old ON */
 static const char *const N_VOICE[] = {"POLY", "MONO", "LEG", "UNI"};   /* V_POLY .. V_UNISON */
 static const char *const N_GLMODE[] = {"RATE", "TIME"};
 static const char *const N_PRIO[] = {"LAST", "LOW", "HIGH"};
 static const char *const N_ALLOC[] = {"ROT", "REUSE"};
-static const char *const N_ORDER[] = {"NOTE", "PLAY"};
+static const char *const N_ORDER[] = {"NOTE", "PLAY", "SCL"};   /* (winampFM: SCL, one key plays the scale: seq.c arp_list) */
 static const char *const N_CLICK[] = {"OFF", "REC", "ON"};   /* G_CLOCK is the metronome (seq.c click_tick) */
 static const char *const N_NOTE[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static const char *const N_DASH[] = {"--"};
@@ -166,7 +170,7 @@ static const param_desc_t GP[G_COUNT] = {
     [G_SYNC] = PE("SYNC", N_SYNC, 0),           /* a setting of the FM-1, not of a project (panel.c lights_sync) */
     [G_ROUTE] = PE("IN", N_MIN, 0),             /* MIDI IN: NOTES (and the clock), CLOCK only, or CH n: that channel only (a setting of the FM-1) */
     [G_INFO] = PD("CPU", F_INT, 0, 0, 0),
-    [G_SLOT] = PD("SLOT", F_INT, 1, 4, 1),
+    [G_SLOT] = {"SECT", F_INT, 1, 4, 1, N_SECT, 0},     /* (2.7: A..D, the song's sections; "SLOT" 1..4 before) */
     [G_NAME] = PE("NAME", N_DASH, 0),
     [G_LOAD] = PE("LOAD", N_GO, 0),
     [G_SAVE] = PE("SAVE", N_GO, 0),
@@ -194,7 +198,12 @@ static const param_desc_t GP[G_COUNT] = {
     [G_TXRATE] = PE("RATE", N_TXRATE, 2),
     [G_TXWHEN] = PE("WHEN", N_TXWHEN, 0),         /* PLAY: while the transport runs (fades in / out); ALWAYS */
     [G_TXDUCK] = PE("DUCK", N_ONOFF, 0),          /* ON: the kick pumps it too (GLO > MASTER > DUCK) */
+    [G_FXCH] = PE("FX CH", N_MCH, 0),
+    [G_DRMAP] = PE("DR MAP", N_DRMAP, 0),
+    [G_CLKOUT] = PE("CLOCK", N_CLKOUT, 0),       /* 2.7, GLO > MIDI 3: MIDI clock and START / STOP out on USB (seq.c) */
+    [G_RMCH] = PE("REMOTE", N_MCH, 0),           /* 2.7, GLO > MIDI 3: the buttons over MIDI (CC 102..115, seq.c remote_cc) */        /* 2.7, GLO > MIDI 3: MIDI notes -> drum sounds (seq.c midi_drum_lane) */            /* 2.7, GLO > MIDI 3: the punch-in FX's channel (seq.c midi_fx) */
     [G_BEND] = PD("BEND", F_SEMI, 1, 12, 2),      /* 2.6, GLO > MIDI 2: MIDI pitch bend's range (a setting of the FM-1) */
+    [G_FXFADE] = PD("FADE", F_INT, 0, 15, 0),     /* 2.7.2: the punch-in FX fade (FX layer SELECT), 0 off .. 15 (punch.c) */
 };
 
 static const param_desc_t DRUM_KIT_DESC = PE("KIT", DRUM_KIT_NAMES, 0);
@@ -376,7 +385,7 @@ enum { FAM_HOME, FAM_ENV, FAM_LFO, FAM_FX, FAM_SCL, FAM_EDIT, FAM_GLO, FAM_SAVE,
        FAM_COUNT };
 enum { SC_TRACK, SC_GLOBAL, SC_ENGINE, SC_STEP, SC_TRK, SC_SONG, SC_DRUM };
 enum { GR_NONE, GR_ADSR, GR_LFO, GR_STEPS, GR_ARP, GR_SCALE, GR_FX, GR_ROLL, GR_BROWSE, GR_SLOTS, GR_USER, GR_TRK,
-       GR_SLCR, GR_INS };
+       GR_SLCR, GR_INS, GR_WAVE };
 
 typedef struct {
     const char *title;
@@ -401,6 +410,7 @@ static const page_t PAGES[] = {
     {"SEL 2", FAM_SCL, SC_TRACK, GR_SCALE, {P_TRANS, P_STRUM, P_VLEAD, 0xFF}},   /* (2.4: the chords played) */
     {"EDIT 1", FAM_EDIT, SC_ENGINE, GR_NONE, {P_E0, P_E1, P_E2, P_E3}},
     {"EDIT 2", FAM_EDIT, SC_ENGINE, GR_NONE, {P_E4, P_E5, P_E6, P_E7}},
+    {"WAVE", FAM_EDIT, SC_ENGINE, GR_WAVE, {P_E5, P_E7, P_E3, P_E1}},   /* SAMPLE only: IN OUT LOOP TUNE over the wave */
     {"FILTER", FAM_EDIT, SC_TRACK, GR_NONE, {P_FTYPE, P_E4, P_E5, P_E7}},   /* ANALOG only (2.6, Felucca 1.5): TYPE CUT
                                                                           * RES KTR (page_shown) */
     {"VOICE", FAM_EDIT, SC_TRACK, GR_NONE, {P_VOICE, P_GLIDE, P_GLMODE, P_PRIO}},
@@ -413,15 +423,17 @@ static const page_t PAGES[] = {
     {"MIDI 2", FAM_GLO, SC_GLOBAL, GR_NONE, {G_ROUTE, G_CHOTH, G_MIDI, G_BEND}},   /* 2.6: IN, OTHER, OUT, BEND: every MIDI
                                                                            * setting in these two pages (IN and OUT on
                                                                            * SYSTEM too, the drums' channel on DRUMS) */
+    {"MIDI 3", FAM_GLO, SC_GLOBAL, GR_NONE, {G_FXCH, G_DRMAP, G_RMCH, G_CLKOUT}},   /* 2.7: the punch-in FX over MIDI */
     {"TEXTURE", FAM_GLO, SC_GLOBAL, GR_NONE, {G_TXSRC, G_TXLVL, G_TXTONE, G_TXMOVE}},   /* 2.6: the bed under the mix */
     {"TEXTURE 2", FAM_GLO, SC_GLOBAL, GR_NONE, {G_TXRATE, G_TXWHEN, G_TXDUCK, 0xFF}},
     {"PRESETS", FAM_SAVE, SC_GLOBAL, GR_BROWSE, {0xFF, 0xFF, 0xFF, 0xFF}},   /* browser: PRESETS knob / KNOB 1 */
     {"USER", FAM_SAVE, SC_GLOBAL, GR_USER, {0xFF, 0xFF, 0xFF, 0xFF}},       /* user presets: SLOT LOAD ERASE SAVE */
-    {"PROJECT", FAM_SAVE, SC_GLOBAL, GR_SLOTS, {G_SLOT, 0xFF, G_LOAD, G_SAVE}},   /* (KNOB 2: ERASE, 2.6: ui_input.c) */
+    {"SECTION", FAM_SAVE, SC_GLOBAL, GR_SLOTS, {G_SLOT, 0xFF, G_LOAD, G_SAVE}},   /* ("PROJECT" before 2.7) */   /* (KNOB 2: ERASE, 2.6: ui_input.c) */
     {"TOOLS", FAM_SAVE, SC_GLOBAL, GR_NONE, {G_CLRSEQ, G_INITSND, 0xFF, G_NEWPRJ}},
-    {"ARP", FAM_ARP, SC_TRACK, GR_ARP, {P_AMODE, P_ARATE, P_AOCT, P_AGATE}},
+    {"ARP", FAM_ARP, SC_TRACK, GR_NONE, {P_AMODE, P_ARATE, P_AOCT, P_AGATE}},   /* (2.7.2: its values large, as ARP 2:
+                                                       * GR_ARP was never drawn, the middle stayed empty) */
     {"ARP 2", FAM_ARP, SC_TRACK, GR_NONE, {P_ASWING, P_APROB, P_AHOLD, P_AORDER}},
-    {"STEP", FAM_SEQ, SC_STEP, GR_ROLL, {0, 1, 2, 3}},
+    {"NOTES", FAM_SEQ, SC_STEP, GR_ROLL, {0, 1, 2, 3}},   /* (2.7.2: the NOTES editor; "STEP" before) */
     {"PATTERN", FAM_SEQ, SC_TRACK, GR_STEPS, {P_SLEN, P_SDIV, P_SSWING, P_SGATE}},
     {"SONG", FAM_SEQ, SC_SONG, GR_NONE, {0xFF, 0xFF, 0xFF, 0xFF}},
     {"TRACKS", FAM_TRK, SC_TRK, GR_TRK, {0, 1, 2, 3}},   /* REC button; TRACK LEVEL LEN PAN */
@@ -439,11 +451,15 @@ static int page_for_drum(const page_t *pg)
     if (pg->scope == SC_GLOBAL)
         return pg->graph != GR_BROWSE && pg->graph != GR_USER;
     return pg->scope != SC_ENGINE && (pg->scope != SC_TRACK || pg->fam == FAM_SEQ || pg->graph == GR_SLCR ||
-                                      pg->graph == GR_INS);
+                                      pg->graph == GR_INS || pg->id[0] == P_TFLT);   /* (2.7.2: FX > FILTER too, the
+                                                       * track's filter: the drums have it since 2.4, the page was
+                                                       * greyed "DRUM TRACK") */
 }
 /* a page the buttons and SELECT reach on the selected track: EDIT > FILTER (TYPE) on ANALOG only */
 static int page_shown(const page_t *pg)
 {
+    if (pg->graph == GR_WAVE)
+        return !is_drum(TSEL) && ENGINES[TSEL->eng_req % NENGINES] == &ENG_SAMPLE;
     return pg->id[0] != P_FTYPE || (!is_drum(TSEL) && TSEL->eng_req % NENGINES == 0u);
 }
 

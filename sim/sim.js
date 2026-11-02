@@ -68,6 +68,7 @@
         else if (m.t === 'leds') { W.ledv.set(m.leds); W.dimv.set(m.dims); W.st = m.st; W.age = m.age; }
         if (m.st !== undefined) { const bl = (m.st >> 24) & 15; if (bl && bl !== W.bl) { W.bl = bl; lcdbox.style.filter = bl >= 10 ? '' : `brightness(${bl / 10})`; } }   // the menu's BRIGHTNESS
         else if (m.t === 'flash') saveFlash(m.data);
+        else if (m.t === 'touched') { const r = W.tw[m.id]; delete W.tw[m.id]; if (r) r(m.a); }
       };
       W.gain = W.ctx.createGain(); W.gain.gain.value = W.muted ? 0 : 1;
       W.node.connect(W.gain); W.gain.connect(W.ctx.destination);
@@ -105,7 +106,7 @@
   // what each control does on the winampFM screen (the balloon over the model)
   const KD = {
     master: 'volume geral (aparece na barra de volume)',
-    select: 'EFFECTS: troca o grupo (SEND · SPACE · MASTER · PARTY · TRACK)|VISUALIZER: troca a imagem (SCOPE · BARS · MILK · RAYS · TUNNEL)',
+    select: 'EFFECTS: troca o grupo (SEND · SPACE · MASTER · PARTY · TRACK)|VISUALIZER: troca a imagem (SCOPE · BARS · MILK · RAYS · SHIP · RACER · DRIVE; mais um HOME: 28 em tela cheia)',
     presets: 'PLAYLIST: rola a lista de sons e carrega o som na faixa selecionada',
     algo: 'escolhe a faixa: 1 → 2 → 3 → DRUMS (sem dar a volta)',
     k1: 'slider 1 do grupo de efeitos aberto', k2: 'slider 2 do grupo de efeitos aberto', k3: 'slider 3 do grupo de efeitos aberto', k4: 'slider 4 do grupo de efeitos aberto',
@@ -149,6 +150,18 @@
     for (let j = 0; j < 11; j++) setLed('b' + j, lv['b' + j] || 0);
   }, 33);
 
+  // the flat screen as a touch screen: the firmware says what is under the click (emu_touch), the page does it as a hand would (the model's knobs turn too)
+  W.tw = {}; W.tid = 0;
+  W.touch = (x, y, kind, d = 0) => new Promise((res) => { if (!W.node) { res(0); return; } const id = ++W.tid; W.tw[id] = res; send({ t: 'touch', x: x | 0, y: y | 0, kind, d, id }); });
+  const ENCN = ['select', 'algo', 'k1', 'k2', 'k3', 'k4', 'presets'];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  W.act = async (a) => {                                               // a: type << 24 | id << 16 | steps
+    const type = a >>> 24, id = (a >> 16) & 255, n = (a << 16) >> 16;
+    if (type === 1) { btnDown(LABID[id]); await wait(110); btnUp(LABID[id]); }
+    else if (type === 2) for (let i = 0; i < Math.abs(n); i++) { knobTurn(ENCN[id], n > 0 ? 1 : -1); await wait(45); }
+    else if (type === 4) for (let i = 0; i < n; i++) { btnDown('home'); await wait(90); btnUp('home'); await wait(380); }
+    return type === 3 ? ENCN[id] : null;                               // (a drag: the knob it turns)
+  };
   G.SIM = { sim, api: { btnDown, btnUp, keyPress, keyRelease, knobTurn, toggleLatch, press, wDown, bDown, leds, BLAB, WK, host, plate, slot, lcdbox, fit, set3d: null, describe, showTip, moveTip, hideTip } };
 
   // ---------------------------------------------------------------- the computer keyboard (the same letters as the FM1 Quest simulator)

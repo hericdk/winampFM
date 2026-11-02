@@ -44,11 +44,12 @@ const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(24, 2, .5,
 scene.add(new THREE.HemisphereLight(0xc8d0ff, 0x1c1620, .5));
 const key = new THREE.DirectionalLight(0xfff2e0, 1.15); key.position.set(-5, 7, 9); scene.add(key);
 const rim = new THREE.DirectionalLight(0x7f94ff, .5); rim.position.set(7, -3, 4); scene.add(rim);
+let envTex;                                                      // (kept: the pad beside the flat screen lights itself from the same sky)
 (function env() {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256; const x = c.getContext('2d');
   const g = x.createLinearGradient(0, 0, 0, 256); g.addColorStop(0, '#6b6f96'); g.addColorStop(.42, '#1b1a25'); g.addColorStop(1, '#050408'); x.fillStyle = g; x.fillRect(0, 0, 512, 256);
   x.fillStyle = '#ffffff'; x.globalAlpha = .85; x.fillRect(60, 46, 190, 22); x.fillRect(300, 74, 150, 14); x.globalAlpha = .55; x.fillRect(120, 100, 260, 6); x.globalAlpha = .35; x.fillRect(200, 18, 110, 10); x.fillStyle = '#7f94ff'; x.globalAlpha = .4; x.fillRect(430, 40, 60, 90);
-  const t = new THREE.CanvasTexture(c); t.mapping = THREE.EquirectangularReflectionMapping; t.encoding = THREE.sRGBEncoding;
+  const t = new THREE.CanvasTexture(c); t.mapping = THREE.EquirectangularReflectionMapping; t.encoding = THREE.sRGBEncoding; envTex = t;
   const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromEquirectangular(t).texture; pm.dispose();
 })();
 
@@ -306,5 +307,60 @@ z.onclick = () => setZoom(!st.zt);
 document.getElementById('s-float').onchange = e => { st.float = e.target.checked; };
 let on = true; try { on = localStorage.getItem('wfm.sim3d') !== '0'; } catch (e) {}
 set3d(on); if (mst.on) setMini(true);
+
+// ---------------------------------------------------------------- the pad beside the flat screen (index.html #fpad3d): the model's own twelve buttons and eight knobs,
+// cloned (same geometry and materials: they light with the same LEDs), in two columns, slanted; nothing else of the model
+(function pad() {
+  const mount = document.getElementById('fpad3d'); if (!mount) return;
+  let pr; try { pr = new THREE.WebGLRenderer({ antialias: true, alpha: true }); } catch (e) { return; } if (!pr.getContext()) return;
+  const PW = 240, PH = 480;
+  pr.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); pr.outputEncoding = THREE.sRGBEncoding; pr.toneMapping = THREE.ACESFilmicToneMapping; pr.toneMappingExposure = 1.3; pr.setClearColor(0x000000, 0);
+  pr.setSize(PW, PH); mount.append(pr.domElement); pr.domElement.style.touchAction = 'none';
+  const ps = new THREE.Scene(), pc = new THREE.PerspectiveCamera(22, PW / PH, .5, 80);
+  ps.add(new THREE.HemisphereLight(0xc8d0ff, 0x1c1620, .5));
+  const k2 = new THREE.DirectionalLight(0xfff2e0, 1.15); k2.position.set(-5, 7, 9); ps.add(k2);
+  const r2 = new THREE.DirectionalLight(0x7f94ff, .5); r2.position.set(7, -3, 4); ps.add(r2);
+  { const pm = new THREE.PMREMGenerator(pr); ps.environment = pm.fromEquirectangular(envTex).texture; pm.dispose(); }
+  const g = new THREE.Group(); ps.add(g);
+  const ppick = [], pb = [], pk = [];
+  ['fx', 'sel', 'env', 'lfo', 'edit', 'glo', 'home', 'save', 'arp', 'seq', 'play', 'rec'].forEach((id, i) => {   // the buttons: 6 rows of 2
+    const r = lit.find((o) => o.kind === 'btn' && o.id === id); if (!r) return;
+    const src = r.keyG.parent, c = src.clone(true); c.position.set(i % 2 ? .3 : -.3, 2.25 - (i >> 1) * .46, 0); g.add(c);
+    pb.push({ r, kg: c.children[src.children.indexOf(r.keyG)] }); c.traverse((o) => { if (o.userData && o.userData.pick) ppick.push(o); });
+  });
+  ['k1', 'k2', 'k3', 'k4', 'select', 'presets', 'algo', 'master'].forEach((id, i) => {   // the knobs: 4 rows of 2, their names over them
+    const k = knobs[id]; if (!k) return;
+    const c = k.g.clone(true), x = i % 2 ? .33 : -.33, y = -.72 - (i >> 1) * .7; c.position.set(x, y, 0); g.add(c);
+    pk.push({ id, pg: c.children[k.g.children.indexOf(k.pg)] }); c.traverse((o) => { if (o.userData && o.userData.pick) ppick.push(o); });
+    const lg = new THREE.Group(); lg.position.set(x, y + .33, .02); g.add(lg);
+    labelPlane(.62, .14, (cx, W2, H2) => { cx.fillStyle = KCOL[id] && id !== 'master' ? KCOL[id] : '#b9b4c2'; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.font = '600 44px "Pixelify Sans", monospace'; cx.fillText(KLAB[id].replace(/^KNOB(\d)$/, 'KNOB $1'), W2 / 2, H2 / 2 + 2); }, 0, lg);
+  });
+  g.position.y = .02; g.rotation.x = -.12; g.rotation.y = -.22;            // (slanted back, and turned a little toward the screen on its left)
+  pc.position.set(0, 2.2, 15); pc.lookAt(0, -.25, 0);                         // (from a little above, as the model's camera: the tops stay black)
+  // the hand: a button is held as long as it is pressed; a knob turns by dragging up / down, or with the wheel
+  const ray2 = new THREE.Raycaster(), n2 = new THREE.Vector2();
+  const hitP = (e) => { const r = pr.domElement.getBoundingClientRect(); n2.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); ray2.setFromCamera(n2, pc); const h = ray2.intersectObjects(ppick, false)[0]; return h ? h.object.userData.pick : null; };
+  let pa = null;
+  pr.domElement.addEventListener('pointerdown', (e) => {
+    const h = hitP(e); if (!h) return; e.preventDefault(); try { pr.domElement.setPointerCapture(e.pointerId); } catch (er) {}
+    if (h.kind === 'btn') { A.btnDown(h.id); pa = { kind: 'btn', id: h.id }; } else if (h.kind === 'knob') pa = { kind: 'knob', id: h.id, y: e.clientY };
+  });
+  pr.domElement.addEventListener('pointermove', (e) => {
+    if (!pa) { const h = hitP(e); pr.domElement.style.cursor = h ? (h.kind === 'knob' ? 'ns-resize' : 'pointer') : 'default'; return; }
+    if (pa.kind !== 'knob') return; const n = Math.trunc((pa.y - e.clientY) / 7); if (!n) return; pa.y -= n * 7;
+    for (let j = 0; j < Math.abs(n); j++) A.knobTurn(pa.id, n > 0 ? 1 : -1);
+  });
+  const end = () => { if (pa && pa.kind === 'btn') A.btnUp(pa.id); pa = null; };
+  pr.domElement.addEventListener('pointerup', end); pr.domElement.addEventListener('pointercancel', end);
+  let acc = 0;
+  pr.domElement.addEventListener('wheel', (e) => { const h = hitP(e); if (!h || h.kind !== 'knob') return; e.preventDefault(); acc += e.deltaY; if (Math.abs(acc) < 40) return; A.knobTurn(h.id, acc > 0 ? -1 : 1); acc = 0; }, { passive: false });
+  (function loop() {
+    requestAnimationFrame(loop); if (!mount.offsetParent || document.hidden) return;
+    pb.forEach((b) => { b.kg.position.z = b.r.keyG.position.z; });         // (pressed with the model's: the same press, the same light)
+    pk.forEach((k) => { k.pg.rotation.z = -(sim.ang[k.id] || 0) * Math.PI / 180; });
+    pr.render(ps, pc);
+  })();
+  G.FM1PAD = true;
+})();
 G.SIM3D = { scene, camera, renderer, dev, st, setPix, pix, corners: () => screenCorners.map(proj), size: () => [sw, sh] };
 })(window);

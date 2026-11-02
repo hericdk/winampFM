@@ -97,9 +97,15 @@
       const d = api(id);
       say(T('VISUALIZER: HOME changes the window; SELECT changes the picture', 'VISUALIZER: HOME troca a janela; SELECT troca a imagem'));
       await d.view(2); await d.start();
-      const names = ['SCOPE', 'BARS', 'MILK', 'RAYS', 'TUNNEL'];
+      const names = ['SCOPE', 'BARS', 'MILK', 'RAYS', 'SHIP'];
       for (let v = 0; v < 5; v++) { say('VISUALIZER: ' + names[v]); for (let r = 0; r < 2; r++) { await d.chord([0, 4, 9], 300); await d.play([2, 7, 11, 7], 120); } if (v < 4) await d.knob('select', 1, 80); }
-      await d.knob('select', -4, 30); await d.view(1); await d.stop();
+      await d.knob('select', -4, 30);
+      say(T('HOME again: the whole screen, 28 pictures that answer to what you play', 'HOME de novo: a tela cheia, 28 imagens que respondem ao que você toca'));
+      await d.tap('home', 90); await d.w(400);
+      for (let v = 0; v < 3; v++) { for (let r = 0; r < 2; r++) { await d.chord([0, 4, 9], 300); await d.play([2, 7, 11, 7], 120); } if (v < 2) await d.knob('select', 1, 80); }
+      await d.knob('select', -2, 30);
+      await d.tap('home', 90); await d.tap('home', 90); await d.w(300);   // (the whole screen -> TAPES -> EFFECTS)
+      await d.view(1); await d.stop();
     },
   };
   DEMOS.all = async (id) => { for (const k of ['player', 'record', 'tapes', 'visual']) { await DEMOS[k](id); await sl(600); live(id); } };

@@ -17,7 +17,7 @@
   })();
 </script>
 <title>winampFM Synth · firmware for the M-VAVE FM-1</title>
-<meta name="description" content="winampFM Synth: a Winamp-style firmware for the M-VAVE FM-1. The sound list, four recordable tracks, effects on sliders, PARTY, TAPES and a line visualizer.">
+<meta name="description" content="winampFM Synth: a Winamp-style firmware for the M-VAVE FM-1. The sound list, four recordable tracks, effects on sliders, PARTY, TAPES and 28 full-screen visualizers.">
 <style>
   @font-face { font-family: "Pixelify Sans"; src: url(assets/PixelifySans-400.ttf) format("truetype"); font-display: swap; }
   :root { --bg: #0e0f1a; --bg2: #151627; --line: #262840; --txt: #d6d6e2; --dim: #8b8ba2; --gold: #e8d898; --org: #f07818; --org2: #ffb050; --grn: #1ce61c;
@@ -57,6 +57,8 @@
   .tip b { color: var(--org2); font-size: 15px; }
   .sw:hover .tip, .sw:focus-within .tip { display: block; }
   @media (max-width: 640px) { header.top { flex-wrap: wrap; gap: 10px; } .tr { width: 100%; justify-content: space-between; } }
+  .edl { font: 13px "Pixelify Sans", monospace; color: #1a0d02; background: var(--org); border: 1px solid var(--org); border-radius: 8px; padding: 7px 12px; text-decoration: none; }   /* (the editor, always in view) */
+  .edl:hover { background: #fff; border-color: #fff; }
   .lang { display: flex; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
   .lang button { font: 13px "Pixelify Sans", monospace; background: none; color: var(--dim); border: 0; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
   .lang button[aria-pressed="true"] { background: var(--line); color: #fff; }
@@ -118,8 +120,8 @@
   pre#log { background: #0b0c16; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; }
   /* the 3D simulator */
   section.simsec { padding: 46px 0 0; }
-  .simwrap { background: transparent; }
-  #simframe { display: block; width: 100%; height: 520px; border: 0; background: transparent; }
+  .simwrap { background: transparent; width: min(1320px, calc(100vw - 32px)); position: relative; left: 50%; transform: translateX(-50%); }   /* (wider than the text: the model and the pixel screen side by side; the standard of the 3 firmwares) */
+  #simframe { display: block; width: 100%; height: 900px; border: 0; background: transparent; }   /* (then the simulator's own height: simHeight) */
   /* the cookie notice (Google Analytics only, as on the FM1 Quest page) */
   #ckbar { position: fixed; left: 16px; bottom: 16px; z-index: 120; max-width: min(460px, calc(100vw - 32px)); background: var(--bg2); border: 1px solid var(--org); box-shadow: 0 8px 28px #0008; padding: 14px 16px; font-size: 14px; line-height: 1.45; border-radius: 8px; }
   #ckbar[hidden] { display: none; }
@@ -144,6 +146,7 @@
         <span class="sw"><a class="ib" href="https://www.youtube.com/@_heric" target="_blank" rel="noopener" aria-label="YouTube"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 7.2a2.6 2.6 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4A2.6 2.6 0 0 0 2.4 7.2C2 8.8 2 12 2 12s0 3.2.4 4.8a2.6 2.6 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.6 2.6 0 0 0 1.8-1.8c.4-1.6.4-4.8.4-4.8s0-3.2-.4-4.8zM10 15V9l5.2 3L10 15z"/></svg></a>
           <span class="tip" role="tooltip"><span lang="en"><b>Demos and updates</b><br>Videos of winampFM and FM1 Quest updates in action, development guides so more people can create with their own creativity, and some behind the scenes.</span><span lang="pt"><b>Demonstrações e atualizações</b><br>Vídeos das atualizações do winampFM e do FM1 Quest em ação, guias de desenvolvimento para mais gente criar com a própria criatividade, e alguns bastidores.</span></span></span>
       </div>
+      <a class="edl" href="editor/" target="_blank" rel="noopener" title="winampFM editor: songs, backups and sounds from the computer (Chrome / Edge, USB)">Editor</a>
       <div class="lang" role="group" aria-label="Language"><button data-set="en" aria-pressed="true">EN</button><button data-set="pt" aria-pressed="false">PT</button></div>
     </div>
   </header>
@@ -151,18 +154,20 @@
   <section class="hero">
     <img src="assets/logo.png" alt="winampFM">
     <div><h1><span lang="en">winampFM Synth for your FM-1</span><span lang="pt">winampFM Synth para o seu FM-1</span></h1>
-    <p><span lang="en">A free firmware for the M-VAVE FM-1. Your sounds as a playlist, four tracks you record as loops, effects on sliders, and a visualizer made of lines.</span>
-       <span lang="pt">Um firmware gratuito para o M-VAVE FM-1. Seus sons como uma playlist, quatro faixas que você grava em loop, efeitos em sliders e um visualizador feito de linhas.</span></p></div>
+    <p><span lang="en">A free firmware for the M-VAVE FM-1. Your sounds as a playlist, four tracks you record as loops, effects on sliders, and 28 full-screen visualizers.</span>
+       <span lang="pt">Um firmware gratuito para o M-VAVE FM-1. Seus sons como uma playlist, quatro faixas que você grava em loop, efeitos em sliders e 28 visualizadores em tela cheia.</span></p></div>
   </section>
 
   <section class="inst" id="install">
     <div class="ihead">
       <button id="go" disabled data-t="install"></button>
-      <span class="ver"><b>winampFM v0.12</b><br><span lang="en">based on SLOOP 2.6</span><span lang="pt">baseado no SLOOP 2.6</span></span>
+      <span class="ver"><b>winampFM v0.9</b><br><span lang="en">based on SLOOP 2.8.4</span><span lang="pt">baseado no SLOOP 2.8.4</span></span>
       <div class="imeta"><p class="small" data-t="intro"></p><p class="small" data-t="warn"></p></div>
     </div>
     <div class="prog"><progress id="bar" max="100" value="0"></progress><span id="pct">0%</span></div>
     <p id="status" aria-live="polite"></p>
+    <p class="small"><span lang="en">Songs, backups and sounds from the computer: <a href="editor/" target="_blank" rel="noopener">the winampFM editor</a> (Chrome or Edge, USB). It is the SLOOP editor by <a href="https://github.com/isod89/sloop-fm1" target="_blank" rel="noopener">isod89</a>, with our name and colours.</span>
+       <span lang="pt">Músicas, backup e sons pelo computador: <a href="editor/" target="_blank" rel="noopener">o editor do winampFM</a> (Chrome ou Edge, USB). É o editor do SLOOP, de <a href="https://github.com/isod89/sloop-fm1" target="_blank" rel="noopener">isod89</a>, com o nosso nome e as nossas cores.</span></p>
   </section>
 
   <div class="film">
@@ -190,7 +195,7 @@
         <div class="keys">
           <kbd style="--c:var(--k1)">PRESETS</kbd><span lang="en">scroll the list, load the sound</span><span lang="pt">rola a lista e carrega o som</span>
           <kbd style="--c:var(--k2)">ALGORITHM</kbd><span lang="en">pick the track: 1 → 2 → 3 → DRUMS</span><span lang="pt">escolhe a faixa: 1 → 2 → 3 → DRUMS</span>
-          <kbd style="--c:var(--k3)">HOME</kbd><span lang="en">next window: FX · PL · VIS · TAPES</span><span lang="pt">próxima janela: FX · PL · VIS · TAPES</span>
+          <kbd style="--c:var(--k3)">HOME</kbd><span lang="en">next window: FX · PL · VIS · full screen · TAPES</span><span lang="pt">próxima janela: FX · PL · VIS · tela cheia · TAPES</span>
         </div>
       </div>
     </div>
@@ -248,7 +253,7 @@
         <div class="keys">
           <kbd style="--c:var(--k1)">PLAY hold</kbd><span lang="en">open TAPES (or HOME)</span><span lang="pt">abre TAPES (ou HOME)</span>
           <kbd style="--c:var(--k2)">PRESETS</kbd><span lang="en">spin the tapes</span><span lang="pt">gira as fitas</span>
-          <kbd style="--c:var(--k3)">SEL</kbd><span lang="en">copy into the track</span><span lang="pt">copia para a faixa</span>
+          <kbd style="--c:var(--k3)">SEL</kbd><span lang="en">copy into the track (only SEL copies)</span><span lang="pt">copia para a faixa (só o SEL copia)</span>
         </div>
       </div>
     </div>
@@ -257,11 +262,53 @@
       <video src="media/visual.mp4" poster="media/visual.jpg" muted loop playsinline autoplay preload="none"></video>
       <div>
         <h3><span lang="en">Visualizer</span><span lang="pt">Visualizador</span></h3>
-        <p><span lang="en">Pixel art made only of lines, driven by the sound: SCOPE, BARS, MILK, RAYS, TUNNEL.</span>
-           <span lang="pt">Pixel art feita só de linhas e movida pelo som: SCOPE, BARS, MILK, RAYS, TUNNEL.</span></p>
+        <p><span lang="en">In the window: SCOPE, BARS, MILK, RAYS, SHIP, RACER, DRIVE. One more HOME opens 28 full-screen visualizers that react to your notes, the loop, the knobs and the effects.</span>
+           <span lang="pt">Na janela: SCOPE, BARS, MILK, RAYS, SHIP, RACER, DRIVE. Mais um HOME abre 28 visualizadores em tela cheia que reagem às suas notas, ao loop, aos knobs e aos efeitos.</span></p>
         <div class="keys">
           <kbd style="--c:var(--k1)">HOME</kbd><span lang="en">to the VIS window</span><span lang="pt">vai para a janela VIS</span>
+          <kbd style="--c:var(--k3)">HOME again</kbd><span lang="en">full screen</span><span lang="pt">tela cheia</span>
           <kbd style="--c:var(--k2)">SELECT</kbd><span lang="en">next picture</span><span lang="pt">próxima imagem</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/arpscale.mp4" poster="media/arpscale.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">One key, the whole scale</span><span lang="pt">Uma tecla, a escala inteira</span> <small>v0.9</small></h3>
+        <p><span lang="en">The arpeggiator plays the track's scale from a single key, up, down, at random and in 11 other ways. With HOLD you can let go: it keeps playing until you press the same key again. Two keys play the scale between them.</span>
+           <span lang="pt">O arpejo toca a escala da faixa a partir de uma tecla só: subindo, descendo, aleatório e de outros 11 jeitos. Com HOLD você pode soltar: ele continua até você apertar a mesma tecla de novo. Duas teclas tocam a escala entre elas.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">ARP</kbd><span lang="en">MODE turns it on and picks the way. RATE, OCT, GATE</span><span lang="pt">MODE liga e escolhe o jeito. RATE, OCT, GATE</span>
+          <kbd style="--c:var(--k2)">ARP again</kbd><span lang="en">ORD at SCL: the scale. HOLD at ON: no need to hold</span><span lang="pt">ORD em SCL: a escala. HOLD em ON: sem precisar segurar</span>
+          <kbd style="--c:var(--k3)">SEL</kbd><span lang="en">ROOT and SCL choose the scale</span><span lang="pt">ROOT e SCL escolhem a escala</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/wave.mp4" poster="media/wave.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">Cut your samples on the screen</span><span lang="pt">Corte seus samples na tela</span> <small>v0.9</small></h3>
+        <p><span lang="en">A sample sent with the ½ sampler shows its wave on the FM-1. Move the start and the end with the knobs, see the play head run, and loop what is between them while you hold the key.</span>
+           <span lang="pt">O sample enviado pelo <a href="https://sampler.half.social" target="_blank" rel="noopener">½ sampler</a> mostra a onda no FM-1. Mexa no começo e no fim com os knobs, veja a cabeça de leitura correr e faça o loop do trecho enquanto segura a tecla.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">EDIT</kbd><span lang="en">tap until WAVE (with a USR sound on the track)</span><span lang="pt">toque até WAVE (com um som USR na faixa)</span>
+          <kbd style="--c:var(--k2)">KNOB 1 · 2</kbd><span lang="en">IN and OUT</span><span lang="pt">IN e OUT</span>
+          <kbd style="--c:var(--k3)">KNOB 3 · 4</kbd><span lang="en">LOOP and TUNE</span><span lang="pt">LOOP e TUNE</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="feat">
+      <video src="media/chords.mp4" poster="media/chords.jpg" muted loop playsinline autoplay preload="none"></video>
+      <div>
+        <h3><span lang="en">The chord in the display, a drawing on each page</span><span lang="pt">O acorde no display, um desenho em cada página</span> <small>v0.9</small></h3>
+        <p><span lang="en">Hold a chord and its name takes the place of the time. ENV, LFO, the filter, the arpeggiator, the slicer and the scale now draw what their knobs make.</span>
+           <span lang="pt">Segure um acorde e o nome dele entra no lugar do tempo. ENV, LFO, filtro, arpejo, slicer e escala agora desenham o que os knobs fazem.</span></p>
+        <div class="keys">
+          <kbd style="--c:var(--k1)">2+ keys</kbd><span lang="en">the chord's name, 0.6 s after you let go</span><span lang="pt">o nome do acorde, até 0,6 s depois de soltar</span>
+          <kbd style="--c:var(--k2)">ENV · LFO · SEL · ARP</kbd><span lang="en">the drawing above the sliders</span><span lang="pt">o desenho acima dos sliders</span>
         </div>
       </div>
     </div>
@@ -270,12 +317,12 @@
       <video src="media/pages.mp4" poster="media/pages.jpg" muted loop playsinline autoplay preload="none"></video>
       <div>
         <h3><span lang="en">Everything else, still there</span><span lang="pt">Todo o resto continua lá</span></h3>
-        <p><span lang="en">All the SLOOP pages stay where they were: steps, mix, performance effects, the song chain. In the menu you'll also find screen brightness.</span>
-           <span lang="pt">Todas as páginas do SLOOP continuam onde estavam: passos, mix, efeitos de performance, a corrente de músicas. No menu também tem o brilho da tela.</span></p>
+        <p><span lang="en">All the SLOOP pages stay where they were: steps, mix, performance effects, the song chain. New from SLOOP 2.8.4: the NOTES piano roll, the OCT+ strip, DRUM SOUND, FADE on the performance effects. The menu has KEYBOARD LED, USB AUDIO, BOOT SOUND and TAPES AUTOPLAY.</span>
+           <span lang="pt">Todas as páginas do SLOOP continuam onde estavam: passos, mix, efeitos de performance, a corrente de músicas. Novo do SLOOP 2.8.4: o piano roll NOTES, a faixa do OCT+, DRUM SOUND, FADE nos efeitos de performance. No menu tem KEYBOARD LED, USB AUDIO, BOOT SOUND e TAPES AUTOPLAY.</span></p>
         <div class="keys">
           <kbd style="--c:var(--k1)">SEQ · GLO · FX hold</kbd><span lang="en">steps · mute / solo · performance FX</span><span lang="pt">passos · mute / solo · efeitos de performance</span>
           <kbd style="--c:var(--k2)">SAVE hold</kbd><span lang="en">the song</span><span lang="pt">a música</span>
-          <kbd style="--c:var(--k3)">HOME hold</kbd><span lang="en">menu: brightness, USB audio, boot sound</span><span lang="pt">menu: brilho, áudio USB, som de abertura</span>
+          <kbd style="--c:var(--k3)">HOME hold</kbd><span lang="en">menu: keyboard LEDs, USB audio, boot sound, tapes autoplay</span><span lang="pt">menu: LEDs do teclado, áudio USB, som de abertura, autoplay das fitas</span>
         </div>
       </div>
     </div>
@@ -328,6 +375,7 @@
     const io = new IntersectionObserver((es) => es.forEach((e) => { const v = e.target; if (e.isIntersecting) { if (v.preload === 'none') v.preload = 'auto'; v.play().catch(() => {}); } else v.pause(); }), { rootMargin: '200px' });
     document.querySelectorAll('.feat video').forEach((v) => io.observe(v));
     const sf = document.getElementById('simframe');
+    addEventListener('message', (e) => { if (e.source === sf.contentWindow && e.data && e.data.simHeight) sf.style.height = Math.ceil(e.data.simHeight) + 'px'; });   // (the frame grows with the simulator)
     const simIO = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && !sf.src) { sf.src = 'sim/?embed&lang=' + document.documentElement.dataset.l; simIO.disconnect(); } }, { rootMargin: '400px' });
     simIO.observe(sf);
     sf.addEventListener('load', () => {                     // the frame takes the height of what is in it: no empty band under the model
@@ -726,7 +774,7 @@ const sayK = (k, arg = "") => { lastKey = k; lastArg = arg; $("status").textCont
 const say = (txt) => { lastKey = null; $("status").textContent = txt; };
 const log = (t) => { $("log").textContent += t + "\n"; };
 let image = null;
-const meta = {"version": "0.12", "product": "FM-1_900", "pkg": "release/winampfm-0.12.fwsc", "sha256": "32a78b18132be64b83557886f9fc1c8c4419adb8932a2b8bc83bb5fb7e681b0b"};
+const meta = {"version": "0.9", "product": "FM-1_900", "pkg": "release/winampfm-0.9.fwsc", "sha256": "527b8932547719db6387ff989019dc4167290993b4ffb443993c3d003820fe34"};
 
 let writing = false, stock = null;
 const lockAll = (on) => {

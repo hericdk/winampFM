@@ -2,9 +2,15 @@
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
 /* SLOOP menu (HOME held): IMPORTER (the user samples and songs: see, erase), LOWCUT, ZOOM, LIGHTS, KEYS, NOTES, USB AUDIO, HARDWARE CALIBRATION, ABOUT. */
 /* ------------------------------------------------------------ menu --- */
-enum { MI_LED, MI_IMPORT, MI_LOWCUT, MI_USB, MI_BOOT, MI_BRIGHT, MI_TAPEAUTO, MI_SERIAL, MI_LCLEAR, MI_ABOUT, MI_COUNT };   /* winampFM (2.6: USB SERIAL, MIDI LEARN CLEAR) */
+enum { MI_LED, MI_IMPORT, MI_LOWCUT, MI_USB, MI_BOOT, MI_BRIGHT, MI_TAPEAUTO, MI_SERIAL, MI_ACCEL, MI_FRESO, MI_ADV, MI_DPREV, MI_RATE, MI_CPU1,
+       MI_LCLEAR, MI_ABOUT, MI_COUNT };   /* winampFM (2.6: USB SERIAL, MIDI LEARN CLEAR; 2.7/2.8: KNOB ACCEL .. 2ND CORE) */
+#if FELUCCA_CDC
 #define WFM_MENU_HIDE (1u << MI_BRIGHT)                     /* (BRIGHTNESS: the backlight pulse broke the knobs, main.c) */
-static const char *const MI_NAME[MI_COUNT] = {"KEYBOARD LED", "IMPORTER", "LOWCUT", "USB AUDIO", "BOOT SOUND", "BRIGHTNESS", "TAPES AUTOPLAY", "USB SERIAL", "MIDI LEARN CLEAR", "ABOUT"};
+#else
+#define WFM_MENU_HIDE (1u << MI_BRIGHT | 1u << MI_SERIAL)   /* (SLOOP 2.7: the FM-1 build has no serial console, felucca.c FELUCCA_CDC) */
+#endif
+static const char *const MI_NAME[MI_COUNT] = {"KEYBOARD LED", "IMPORTER", "LOWCUT", "USB AUDIO", "BOOT SOUND", "BRIGHTNESS", "TAPES AUTOPLAY", "USB SERIAL",
+                                              "KNOB ACCEL", "FILTER RESO", "STEP ADVANCE", "DRUM PREVIEW", "USB RATE", "2ND CORE", "MIDI LEARN CLEAR", "ABOUT"};
 /* SOUNDS: PRESETS browses every sound of the selected hero (the synth bank, the drum kits), OCT+ plays / pauses it with a short phrase, the other
  * tracks are soloed out while it plays; SEL keeps it on the hero's track, leaving puts back the sound, the solo and the transport */
 static uint16_t sx_i, sx_n, sx_com, sx_np, sx_perc;                              /* the highlighted one, the count, the one the track has */
@@ -125,7 +131,7 @@ static UI_NOINLINE void sx_enter(void)                          /* remember the 
     if (is_drum(t)) sx_n = DRUM_KITS, sx_np = DRUM_KITS, sx_i = (uint16_t)drum_kit();
     else {                                                        /* the presets, and for the cleric / bard also the Brazilian instruments (the others keep the normal sounds) */
         uint32_t n;
-        sx_i = (uint16_t)preset_pos(&n), sx_np = (uint16_t)n, sx_n = (uint16_t)(n + (song.sel == 2u ? 32u : 0u));
+        sx_i = (uint16_t)base_pos(&n), sx_np = (uint16_t)n, sx_n = (uint16_t)(n + (song.sel == 2u ? 32u : 0u));
         if (song.sel != 2u) t->perc = 0, sx_perc = 0;
         if (t->perc) sx_i = (uint16_t)(n + ((t->perc - 1u) / 16u == sx_brkit(1) ? 16u : 0u) + (t->perc - 1u) % 16u);
     }
@@ -161,7 +167,7 @@ static UI_NOINLINE void sx_apply(void)                          /* the highlight
         t->perc = (uint16_t)(1u + sx_brkit(k / 16u) * 16u + k % 16u);
     } else {
         t->perc = 0;
-        preset_go(sx_i);
+        { uint32_t fb[FAV_N]; preset_go(sx_i + fav_list(fb)); }   /* (SLOOP 2.7: the PRESETS list starts with the favourites) */
     }
     sx_t0 = fm1_ms, sx_st = 0, sx_note = 0;
 }
@@ -356,6 +362,43 @@ static UI_NOINLINE void menu_input(uint32_t pressed)
     }
     if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_SERIAL) {    /* SLOOP 2.6: USB SERIAL (at the next start), right ON, left OFF */
         usb_serial = (uint8_t)(s > 0 ? 1u : s < 0 ? 0u : !usb_serial);
+        settings_later = 1;
+        ok = 0;
+    }
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_ACCEL) {     /* SLOOP 2.7: right ON, left OFF; OCT+ toggles (ui_input.c accel) */
+        knob_accel_off = (uint8_t)(s > 0 ? 0u : s < 0 ? 1u : !knob_accel_off);
+        settings_later = 1;
+        ok = 0;
+    }
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_FRESO) {     /* SLOOP 2.8: the track filter's resonance, 0 (OFF) .. 10, stops at the ends; OCT+ steps round */
+        if (s > 0 && flt_reso < 10u) flt_reso++;
+        else if (s < 0 && flt_reso > 0u) flt_reso--;
+        else if (!s) flt_reso = (uint8_t)(flt_reso >= 10u ? 0u : flt_reso + 1u);
+        settings_later = 1;
+        ok = 0;
+    }
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_ADV) {       /* SLOOP 2.7.1: right ON, left OFF; OCT+ toggles (ui_input.c seq_entry) */
+        step_adv_off = (uint8_t)(s > 0 ? 0u : s < 0 ? 1u : !step_adv_off);
+        settings_later = 1;
+        ok = 0;
+    }
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_DPREV) {     /* SLOOP 2.7.1: right ON, left OFF; OCT+ toggles (ui_studio.c drum_hear) */
+        drum_preview = (uint8_t)(s > 0 ? 1u : s < 0 ? 0u : !drum_preview);
+        settings_later = 1;
+        ok = 0;
+    }
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_RATE) {      /* SLOOP 2.7: AUTO 44.1 48 kHz, at the next start (usb.c usb_rate_mode) */
+        if (s > 0 && usb_rate < 2u) usb_rate++;
+        else if (s < 0 && usb_rate > 0u) usb_rate--;
+        else if (!s) usb_rate = (uint8_t)((usb_rate + 1u) % 3u);
+        settings_later = 1;
+        ok = 0;
+    }
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_CPU1) {      /* SLOOP 2.7: the sound on both cores; right ON, left OFF, at once */
+        cpu1_off = (uint8_t)(s > 0 ? 0u : s < 0 ? 1u : !cpu1_off);
+        cpu1_units = cpu1_off ? 0 : -1;
+        if (!cpu1_off && !cpu1_on())                   /* (core 1 starts only at power-on) */
+            ui_message("ON AT NEXT POWER-ON");
         settings_later = 1;
         ok = 0;
     }

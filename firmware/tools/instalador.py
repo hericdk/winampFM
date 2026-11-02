@@ -20,7 +20,6 @@ js = js[:js.index('</script>') + len('</script>')]
 js = re.sub(r'"pkg": "[^"]+"', f'"pkg": "firmware/winampfm-{V}.fwsc"', js)
 shutil.rmtree('site/firmware', ignore_errors=True); Path('site/firmware').mkdir(parents=True)
 shutil.copy(pkg, f'site/firmware/winampfm-{V}.fwsc')
-shutil.rmtree('site/editor', ignore_errors=True)                  # (no editor link for now: a simpler one later)
 # the texts: winampFM, what each step does, and Portuguese (the page's EN / PT switch)
 R = [('FM1 Quest', 'winampFM'), ('start: "Starting", verify: "Verifying", loader: "Switching to update mode", write: "Writing",\n    reboot: "Restarting", done: "Done",',
       'start: "Talking to the FM-1…", verify: "Step 1 of 3 · sending winampFM to the FM-1 and checking it", loader: "Step 2 of 3 · the FM-1 restarts in update mode", write: "Step 3 of 3 · writing winampFM. Do not unplug the cable",\n    reboot: "Restarting the FM-1…", done: "Done! winampFM is installed: ",')]

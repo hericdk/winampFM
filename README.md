@@ -1,9 +1,10 @@
 # winampFM Synth
 
-**A Winamp 2.x-style firmware for the M-VAVE FM-1.** Your sounds become a playlist, four tracks record as loops, effects sit on sliders and the visualizers fill the whole screen. Current version **v0.12**, based on **SLOOP 2.6**.
+**A Winamp 2.x-style firmware for the M-VAVE FM-1.** Your sounds become a playlist, four tracks record as loops, effects sit on sliders and the visualizers fill the whole screen. Current version **v0.9**, based on **SLOOP 2.8.4**.
 
 - **Site, installer and 3D simulator (the real firmware in your browser, with sound):** https://hericdk.github.io/winampFM/
-- **Install on your FM-1:** open the site in Chrome or Edge, connect the FM-1 by USB and press install. The package is also in [`release/winampfm-0.12.fwsc`](release/).
+- **Install on your FM-1:** open the site in Chrome or Edge, connect the FM-1 by USB and press install. The package is also in [`release/winampfm-0.9.fwsc`](release/).
+- **Editor (songs, backups, samples and sounds from the computer):** https://hericdk.github.io/winampFM/editor/ in Chrome or Edge. It is the [SLOOP editor by isod89](https://github.com/isod89/sloop-fm1) with our name and colours, in six languages.
 - **License:** GPL-3.0-only, like SLOOP, Felucca and FM1 Quest.
 
 ## What is unique to winampFM
@@ -19,8 +20,12 @@ These were made for winampFM, on top of everything SLOOP already does:
 | **PARTY** | Decides who is on stage: SOLO, DUEL, TRIAD or everyone. AUTOTURN changes the stage in time with the song; KEEP holds a lead while the others take turns; YOYO walks across the tracks and back. |
 | **TAPES** | Every sound is a cassette in a PS1-style carousel. Stop on a tape to hear it, then copy the sound and its phrase into your track. Autoplay can be switched off in the menu. |
 | **Visualizers** | In the visualizer window: SCOPE, BARS, MILK, RAYS, SHIP, RACER, DRIVE. HOME again opens them full screen: 28 pixel-art pictures that answer to what you play (notes, loops, the knobs and the effects), from a starfield shooter and a night drive to chords drawn as polygons, a ring of water, a doomscrolling feed, a lofi study and a dancing raccoon. SELECT changes it. |
+| **One key, the whole scale** | ARP 2 → ORD at SCL: one key plays the track's scale, in any of the 14 arpeggiator modes; two keys play the scale between them. With HOLD on you can let go, and the same key again stops it. |
+| **WAVE** | A sample sent with the ½ sampler shows its wave on the FM-1: move IN and OUT with the knobs, see the play head, loop what is between them. |
+| **The chord in the display** | Hold a chord and its name takes the place of the time. |
+| **A drawing on each page** | ENV, LFO, the filter, the arpeggiator, the slicer and the scale draw what their knobs make, above the sliders. |
 | **Punch-in carousel** | Hold FX and the black keys show the 27 performance effects as a moving carousel over a keyboard, with REV/ECHO THROW on the octave keys. |
-| **Brazilian sounds** | CAVAQUINHO, BERIMBAU, AGOGO BELL, SANFONA and BRASIL drum kits, next to all 153 SLOOP 2.6 sounds (157 in total). |
+| **Brazilian sounds** | CAVAQUINHO, BERIMBAU, AGOGO BELL, SANFONA and BRASIL drum kits, next to all the SLOOP sounds (157 in total). |
 | **Easier navigation** | SELECT cycles the page tabs with wrap-around; FILT/MIX in one FX tab; LED colours and boot mute in the menu. |
 | **3D simulator** | The real firmware compiled to WebAssembly, in a 3D model of the FM-1, with a tutorial bar that plays demos by itself. |
 | **Screen recorder widget** | A small Win98-style window on the site records the simulator screen and sound, to save, share or lay over your own videos. |
@@ -29,6 +34,7 @@ Merged from SLOOP 2.4, 2.5 and 2.6 (features the community asked for): FM6 engin
 
 ## Changes
 
+- **v0.9:** the numbers now follow No Man Sky FM, so v0.9 comes after v0.12. Based on SLOOP 2.8.4: the NOTES piano roll, the OCT+ strip, DRUM SOUND, FADE on the performance effects, 15 arpeggiator modes and KBD HOLD, in winampFM's screens. New: the scale arpeggio, the WAVE mini editor, the chord in the display, a drawing on each page, and winampFM's own editor in six languages. The full-screen visualizers send about 40 % less to the screen, and the tutorial now shows them. The simulator page follows the layout shared by the three firmwares.
 - **v0.12:** the visualizer update. 28 full-screen visualizers (HOME after the visualizer window), each one driven by the notes, the loop, the knobs or the effects: SCOPE, BARS, MILK, RAYS, SHIP, RACER, DRIVE, SYNTH, WATERFALL, CURVES, FLOW, TARGET, HOUND, BOXER, CHORDS, ORB, DANCE, BLUEPRINT, PATCH, TAPE, NEO, SMOKE, DOOMSCROLL, ROOM, FLOAT, DUEL, LOFI STUDY and RACCOON. To make room, some sampled sounds are now stored at 16 kHz instead of 22 kHz (piano, vibes, strings, scratch, flute, horns, cavaquinho, agogô and sanfona; the bass at 11 kHz; the acoustic kit at 16 kHz with its cymbals at 22 kHz), as a test of optimization and performance. All 157 sounds are still there. Hear a difference? Comments and suggestions are welcome.
 - **v0.11:** fixes the knobs not responding on the device. The screen-brightness option pulsed the backlight next to the knob scan, and below 100 % the knobs never registered a click. The backlight now stays on (as in SLOOP and FM1 Quest) and the BRIGHTNESS menu item is gone. If your knobs stopped working on v0.1, install v0.11.
 - **v0.1:** launch version.
@@ -45,8 +51,8 @@ The code is GPL-3.0-only, so any firmware you distribute that is based on it mus
 
 | Folder | Content |
 |---|---|
-| `index.html`, `assets/`, `media/`, `sim/` | The site: installer, 3D simulator (`sim/`) and the feature clips. |
-| `release/` | The firmware packages (`winampfm-0.12.fwsc` is the current one). |
+| `index.html`, `assets/`, `media/`, `sim/`, `editor/` | The site: installer, 3D simulator (`sim/`), the editor (`editor/`) and the feature clips. |
+| `release/` | The firmware packages (`winampfm-0.9.fwsc` is the current one). |
 | `firmware/` | The complete source of that firmware (C, JieLi AC79), as the GPL requires. `sh firmware/build.sh` builds the package (see `firmware/BUILDING.md`). |
 
 **Rescue:** hold OCT− alone while switching the FM-1 on to enter the USB rescue mode and reinstall any firmware. Installing custom firmware is at your own risk.
