@@ -66,3 +66,5 @@ The code is GPL-3.0-only, so any firmware you distribute that is based on it mus
 - Font: Pixelify Sans (SIL OFL). Sampled sounds: CC0 recordings (asset terms in `firmware/LICENSING.md`).
 
 Not affiliated with Winamp or M-VAVE. Winamp, M-VAVE and FM-1 are trademarks of their respective owners.
+
+You can also try winampFM in the browser, no flashing needed, in the free community [FM-1 Emulator](https://fm1-emulator.atst.tools/).
